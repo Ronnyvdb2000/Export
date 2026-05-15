@@ -1,183 +1,154 @@
-import pandas as pd
-import pdfplumber
-import re
-from pathlib import Path
+import os
 import argparse
+import pdfplumber
+import pandas as pd
 
-START_MARKER = "2. Productieve investeringen"
-
-IGNORE_PATTERNS = [
-    "VLAANDEREN.BE",
-    "AGENTSCHAP",
-    "LANDBOUW & ZEEVISSERIJ",
-    "Productieve investeringssteun",
-]
-
-HEADER_PATTERNS = [
-    "SUBFILTER",
-    "OMSCHRIJVING",
-    "KENMERK",
-    "EENHEID",
-]
-
-def clean_line(line):
-    line = line.strip()
-
-    # verwijder dubbele spaties
-    line = re.sub(r"\s+", " ", line)
-
-    return line
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 
-def should_ignore(line):
-
-    if not line:
-        return True
-
-    # paginanummers
-    if re.match(r"^\d+$", line):
-        return True
-
-    # vaste headers
-    for pattern in IGNORE_PATTERNS:
-        if pattern.lower() in line.lower():
-            return True
-
-    return False
+START_PAGE = 9
+START_TEXT = "2. Productieve investeringen"
 
 
-def looks_like_header(line):
+def clean_row(row):
+    cleaned = []
 
-    matches = 0
+    for cell in row:
+        if cell is None:
+            cleaned.append("")
+        else:
+            value = str(cell).replace("\n", " ").strip()
+            cleaned.append(value)
 
-    for pattern in HEADER_PATTERNS:
-        if pattern.lower() in line.lower():
-            matches += 1
-
-    return matches >= 2
+    return cleaned
 
 
-def process_pdf(pdf_path):
+def extract_tables(pdf_path):
+    all_rows = []
+    inhoud = []
 
-    toc_rows = []
-    data_rows = []
-
-    found_data_start = False
-    header_added = False
+    started = False
 
     with pdfplumber.open(pdf_path) as pdf:
 
-        for page_num, page in enumerate(pdf.pages, start=1):
+        total_pages = len(pdf.pages)
 
-            print(f"📄 Verwerken pagina {page_num}")
+        if total_pages < 200:
+            raise Exception(
+                f"❌ PDF heeft slechts {total_pages} pagina's. Minimaal 200 vereist."
+            )
 
-            text = page.extract_text()
+        for i, page in enumerate(pdf.pages, start=1):
 
-            if not text:
-                print(f"⚠️ Geen tekst op pagina {page_num}")
+            print(f"📄 Verwerken pagina {i}")
+
+            text = page.extract_text() or ""
+
+            inhoud.append({
+                "Pagina": i,
+                "Tekst": text[:150]
+            })
+
+            if i < START_PAGE:
                 continue
 
-            lines = text.split("\n")
-
-            for raw_line in lines:
-
-                line = clean_line(raw_line)
-
-                if should_ignore(line):
+            if not started:
+                if START_TEXT in text:
+                    started = True
+                else:
                     continue
 
-                # detecteer start data
-                if START_MARKER.lower() in line.lower():
-                    found_data_start = True
-                    print(f"✅ Start data gevonden op pagina {page_num}")
-                    continue
+            tables = page.extract_tables()
 
-                # inhoudstafel
-                if not found_data_start:
-                    toc_rows.append([line])
-                    continue
+            found_table = False
 
-                # headers slechts 1x
-                if looks_like_header(line):
-
-                    if header_added:
+            if tables:
+                for table in tables:
+                    if not table:
                         continue
 
-                    header_added = True
+                    for row in table:
+                        cleaned = clean_row(row)
 
-                # multiline cleanup
-                line = line.replace("\n", " ")
+                        if any(cell != "" for cell in cleaned):
+                            all_rows.append(cleaned)
+                            found_table = True
 
-                data_rows.append([line])
+            # fallback indien geen tabellen gevonden
+            if not found_table:
+                words = page.extract_words()
 
-    toc_df = pd.DataFrame(toc_rows, columns=["INHOUD"])
+                for word in words:
+                    txt = word.get("text", "").strip()
 
-    data_df = pd.DataFrame(data_rows, columns=["DATA"])
+                    if txt:
+                        all_rows.append([txt])
 
-    return toc_df, data_df
-
-
-def export_excel(toc_df, data_df, output_path):
-
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-
-        toc_df.to_excel(
-            writer,
-            sheet_name="INHOUDSTAFEL",
-            index=False
+    if not all_rows:
+        raise Exception(
+            f"❌ Geen data gevonden in {os.path.basename(pdf_path)}"
         )
 
-        data_df.to_excel(
-            writer,
-            sheet_name="DATA",
-            index=False
-        )
+    return inhoud, all_rows
+
+
+def save_excel(output_path, inhoud, rows):
+
+    wb = Workbook()
+
+    # TAB 1 = inhoudstafel
+    ws1 = wb.active
+    ws1.title = "Inhoudstafel"
+
+    inhoud_df = pd.DataFrame(inhoud)
+
+    for r in dataframe_to_rows(inhoud_df, index=False, header=True):
+        ws1.append(r)
+
+    # TAB 2 = alle tabellen
+    ws2 = wb.create_sheet(title="Tabellen")
+
+    for row in rows:
+        ws2.append(row)
+
+    wb.save(output_path)
 
 
 def main():
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--input-dir", default="input")
-    parser.add_argument("--output-dir", default="output")
+    parser.add_argument("--input-dir", required=True)
+    parser.add_argument("--output-dir", required=True)
 
     args = parser.parse_args()
 
-    input_dir = Path(args.input_dir)
-    output_dir = Path(args.output_dir)
+    pdf_files = [
+        f for f in os.listdir(args.input_dir)
+        if f.lower().endswith(".pdf")
+    ]
 
-    output_dir.mkdir(exist_ok=True)
-
-    pdf_files = list(input_dir.glob("*.pdf"))
-
-    print(f"📁 Gevonden PDF bestanden: {[f.name for f in pdf_files]}")
+    print(f"📁 Gevonden PDF bestanden: {pdf_files}")
 
     if not pdf_files:
         raise Exception("❌ Geen PDF bestanden gevonden")
 
-    for pdf_path in pdf_files:
+    for pdf_file in pdf_files:
 
-        print(f"\n🚀 Start conversie: {pdf_path.name}")
+        pdf_path = os.path.join(args.input_dir, pdf_file)
 
-        toc_df, data_df = process_pdf(pdf_path)
+        print(f"\n🚀 Start conversie: {pdf_file}")
 
-        if data_df.empty:
-            raise Exception(
-                f"❌ Geen data gevonden in {pdf_path.name}"
-            )
+        inhoud, rows = extract_tables(pdf_path)
 
-        output_file = output_dir / f"{pdf_path.stem}.xlsx"
+        output_name = os.path.splitext(pdf_file)[0] + ".xlsx"
 
-        export_excel(
-            toc_df,
-            data_df,
-            output_file
-        )
+        output_path = os.path.join(args.output_dir, output_name)
 
-        print(f"✅ Excel opgeslagen: {output_file}")
+        save_excel(output_path, inhoud, rows)
 
-        print(f"📊 TOC rijen: {len(toc_df)}")
-        print(f"📊 DATA rijen: {len(data_df)}")
+        print(f"✅ Excel opgeslagen: {output_path}")
 
 
 if __name__ == "__main__":
