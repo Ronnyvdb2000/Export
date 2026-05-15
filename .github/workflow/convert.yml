@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'input/*.ods'
+      - 'input/*.pdf'
       - 'input/*.odt'
       - 'src/**'
   workflow_dispatch:
