@@ -1,82 +1,89 @@
-#!/usr/bin/env python3
-"""Converter voor PDF, ODS en ODT bestanden naar Excel"""
-
 import pandas as pd
+import re
+import os
 from pathlib import Path
 import argparse
-import sys
 
-def read_pdf_simple(pdf_path):
-    """Lees PDF bestand - eenvoudige extractie"""
-    try:
-        # Probeer tabula-py eerst (werkt goed voor tabellen)
-        import tabula
-        dfs = tabula.read_pdf(pdf_path, pages='all', multiple_tables=True)
-        if dfs:
-            return {f"PDF_Tabel_{i+1}": df for i, df in enumerate(dfs) if not df.empty}
-    except:
-        pass
+def extract_tables_from_text(text):
+    """Haal tabelstructuur uit vrije tekst"""
+    lines = text.split('\n')
+    tables = []
+    current_table = []
+    in_table = False
     
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Herken tabelrijen (bevatten getallen of eenheden zoals m², l, stuk(s))
+        if re.search(r'\d+\s*(m²|m²K/W|l|stuk\(s\)|%)', line) or re.search(r'^\d+\s+\d', line):
+            # Split op meerdere spaties (kolomscheiding)
+            parts = re.split(r'\s{2,}', line)
+            if len(parts) >= 2:
+                current_table.append(parts)
+                in_table = True
+        elif in_table and line and not re.search(r'^\d', line):
+            # Einde van tabel
+            if current_table:
+                tables.append(current_table)
+                current_table = []
+            in_table = False
+    
+    if current_table:
+        tables.append(current_table)
+    
+    return tables
+
+def convert_pdf_to_excel(input_path, output_path):
+    """Converteer PDF naar Excel met tekst-extractie"""
     try:
-        # Fallback naar pdfplumber
         import pdfplumber
-        sheets = {}
-        with pdfplumber.open(pdf_path) as pdf:
-            for page_num, page in enumerate(pdf.pages, 1):
-                tables = page.extract_tables()
-                for table_num, table in enumerate(tables, 1):
-                    if table and len(table) > 1:
-                        df = pd.DataFrame(table[1:], columns=table[0] if table[0] else None)
-                        if not df.empty:
-                            sheets[f"Pagina_{page_num}_Tabel_{table_num}"] = df
-        return sheets
-    except:
-        return {}
-
-def read_ods_simple(ods_path):
-    """Lees ODS bestand"""
-    try:
-        return pd.read_excel(ods_path, sheet_name=None, engine='odf')
-    except:
-        return {}
-
-def convert_file_to_excel(input_file, output_file):
-    """Converteer elk bestand naar Excel"""
-    try:
-        print(f"📄 Converteren: {input_file.name}")
-        
-        sheets = {}
-        
-        if input_file.suffix.lower() == '.pdf':
-            sheets = read_pdf_simple(input_file)
-            print(f"   📑 Gevonden: {len(sheets)} tabellen uit PDF")
-        elif input_file.suffix.lower() == '.ods':
-            sheets = read_ods_simple(input_file)
-            print(f"   📑 Gevonden: {len(sheets)} sheets uit ODS")
-        else:
-            print(f"⚠️ Niet-ondersteund bestandstype: {input_file.suffix}")
-            return False
-        
-        if not sheets:
-            print("   ⚠️ Geen data gevonden, maak leeg Excel bestand")
-            df_empty = pd.DataFrame({'Melding': ['Geen tabellen gevonden in bestand']})
-            sheets = {'Info': df_empty}
-        
-        # Schrijf naar Excel
-        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            for sheet_name, df in sheets.items():
-                clean_name = sheet_name.replace('/', '_').replace('\\', '_')[:31]
-                # Limiteer DataFrame grootte voor performance
-                if len(df) > 10000:
-                    df = df.head(10000)
-                df.to_excel(writer, sheet_name=clean_name, index=False)
-        
-        print(f"   ✅ Succes: {len(sheets)} sheets geconverteerd")
-        return True
-        
-    except Exception as e:
-        print(f"   ❌ Fout: {e}")
+    except ImportError:
+        print("Installeer pdfplumber: pip install pdfplumber")
         return False
+    
+    all_data = []
+    
+    with pdfplumber.open(input_path) as pdf:
+        for page_num, page in enumerate(pdf.pages, 1):
+            text = page.extract_text()
+            if not text:
+                continue
+                
+            tables = extract_tables_from_text(text)
+            
+            for table_idx, table_rows in enumerate(tables):
+                if table_rows:
+                    # Maak DataFrame van gevonden tabel
+                    max_cols = max(len(row) for row in table_rows)
+                    df_data = []
+                    for row in table_rows:
+                        padded = row + [''] * (max_cols - len(row))
+                        df_data.append(padded)
+                    
+                    df = pd.DataFrame(df_data)
+                    all_data.append((f"Pagina{page_num}_Tabel{table_idx+1}", df))
+    
+    # Exporteer naar Excel
+    if all_data:
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            for sheet_name, df in all_data:
+                df.to_excel(writer, sheet_name=sheet_name[:31], index=False, header=False)
+        print(f"✅ {len(all_data)} tabellen geëxtraheerd naar {output_path}")
+        return True
+    else:
+        # Fallback: exporteer ruwe tekst per pagina
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            with pdfplumber.open(input_path) as pdf:
+                for page_num, page in enumerate(pdf.pages, 1):
+                    text = page.extract_text()
+                    if text:
+                        lines = [line for line in text.split('\n') if line.strip()]
+                        df = pd.DataFrame(lines, columns=[f"Pagina {page_num}"])
+                        df.to_excel(writer, sheet_name=f"Pagina{page_num}", index=False)
+        print(f"⚠️ Geen tabellen gevonden, ruwe tekst geëxporteerd naar {output_path}")
+        return True
 
 def main():
     parser = argparse.ArgumentParser()
@@ -86,33 +93,20 @@ def main():
     
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
-    
-    # Maak output directory aan
     output_dir.mkdir(exist_ok=True)
     
-    # Zoek alle ondersteunde bestanden
-    supported_files = []
-    for ext in ['*.pdf', '*.ods', '*.odt']:
-        supported_files.extend(input_dir.glob(ext))
+    pdf_files = list(input_dir.glob('*.pdf'))
+    print(f"📁 Gevonden bestanden: {[f.name for f in pdf_files]}")
     
-    if not supported_files:
-        print(f"❌ Geen .pdf, .ods of .odt bestanden gevonden in {input_dir}")
-        print(f"📁 Bestanden in input: {list(input_dir.iterdir())}")
-        sys.exit(1)
-    
-    print(f"📁 Gevonden bestanden: {[f.name for f in supported_files]}")
-    
-    # Converteer elk bestand
     success_count = 0
-    for input_file in supported_files:
-        output_file = output_dir / f"{input_file.stem}.xlsx"
-        if convert_file_to_excel(input_file, output_file):
+    for pdf_path in pdf_files:
+        print(f"📄 Converteren: {pdf_path.name}")
+        excel_path = output_dir / f"{pdf_path.stem}.xlsx"
+        
+        if convert_pdf_to_excel(pdf_path, excel_path):
             success_count += 1
     
-    print(f"\n📊 Resultaat: {success_count}/{len(supported_files)} bestanden geconverteerd")
-    
-    if success_count == 0:
-        sys.exit(1)
+    print(f"\n📊 Resultaat: {success_count}/{len(pdf_files)} bestanden geconverteerd")
 
 if __name__ == "__main__":
     main()
