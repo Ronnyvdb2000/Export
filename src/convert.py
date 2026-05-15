@@ -1,149 +1,130 @@
-import os
 import argparse
-import pdfplumber
+from pathlib import Path
+
 import pandas as pd
-
-from openpyxl import Workbook
-from openpyxl.utils.dataframe import dataframe_to_rows
+import pdfplumber
 
 
-START_PAGE = 9
-START_TEXT = "2. Productieve investeringen"
+def clean_cell(value):
+    if value is None:
+        return ""
 
+    return str(value).strip()
 
-def clean_row(row):
-    cleaned = []
-
-    for cell in row:
-        if cell is None:
-            cleaned.append("")
-        else:
-            value = str(cell).replace("\n", " ").strip()
-            cleaned.append(value)
-
-    return cleaned
 
 def extract_tables(pdf_path):
     all_rows = []
     inhoud = []
 
-    started = False
-
     with pdfplumber.open(pdf_path) as pdf:
+        for page_number, page in enumerate(pdf.pages, start=1):
+            print(f"📄 Verwerken pagina {page_number}")
 
-        total_pages = len(pdf.pages)
+            try:
+                tables = page.extract_tables()
 
-
-        for i, page in enumerate(pdf.pages, start=1):
-
-            print(f"📄 Verwerken pagina {i}")
-
-            text = page.extract_text() or ""
-
-            inhoud.append({
-                "Pagina": i,
-                "Tekst": text[:150]
-            })
-
-            if i < START_PAGE:
-                continue
-
-            if not started:
-                if START_TEXT in text:
-                    started = True
-                else:
+                if not tables:
                     continue
 
-            tables = page.extract_tables()
-
-            found_table = False
-
-            if tables:
                 for table in tables:
                     if not table:
                         continue
 
                     for row in table:
-                        cleaned = clean_row(row)
+                        if not row:
+                            continue
 
-                        if any(cell != "" for cell in cleaned):
-                            all_rows.append(cleaned)
-                            found_table = True
+                        cleaned_row = [clean_cell(cell) for cell in row]
 
-            # fallback indien geen tabellen gevonden
-            if not found_table:
-                words = page.extract_words()
+                        # Skip lege rijen
+                        if not any(cleaned_row):
+                            continue
 
-                for word in words:
-                    txt = word.get("text", "").strip()
+                        all_rows.append(cleaned_row)
+                        inhoud.append(" | ".join(cleaned_row))
 
-                    if txt:
-                        all_rows.append([txt])
+            except Exception as e:
+                print(f"⚠️ Fout op pagina {page_number}: {e}")
+                continue
 
-    if not all_rows:
-        raise Exception(
-            f"❌ Geen data gevonden in {os.path.basename(pdf_path)}"
-        )
+    # GEEN crash meer
+    if len(all_rows) == 0:
+        print(f"⚠️ Geen data gevonden in {pdf_path.name}")
+        return "", []
 
-    return inhoud, all_rows
+    return "\n".join(inhoud), all_rows
 
 
-def save_excel(output_path, inhoud, rows):
+def save_excel(rows, output_path):
+    max_cols = max(len(r) for r in rows)
 
-    wb = Workbook()
-
-    # TAB 1 = inhoudstafel
-    ws1 = wb.active
-    ws1.title = "Inhoudstafel"
-
-    inhoud_df = pd.DataFrame(inhoud)
-
-    for r in dataframe_to_rows(inhoud_df, index=False, header=True):
-        ws1.append(r)
-
-    # TAB 2 = alle tabellen
-    ws2 = wb.create_sheet(title="Tabellen")
+    normalized_rows = []
 
     for row in rows:
-        ws2.append(row)
+        normalized_rows.append(
+            row + [""] * (max_cols - len(row))
+        )
 
-    wb.save(output_path)
+    df = pd.DataFrame(normalized_rows)
+
+    df.to_excel(output_path, index=False)
+
+    print(f"✅ Excel opgeslagen: {output_path}")
+
+
+def process_pdf(pdf_path, output_dir):
+    print(f"\n🚀 Start conversie: {pdf_path.name}")
+
+    inhoud, rows = extract_tables(pdf_path)
+
+    # Geen data → gewoon overslaan
+    if not rows:
+        print(f"⏭️ Bestand overgeslagen: {pdf_path.name}")
+        return
+
+    output_file = output_dir / f"{pdf_path.stem}.xlsx"
+
+    save_excel(rows, output_file)
 
 
 def main():
-
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--input-dir", required=True)
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--input-dir",
+        required=True,
+        help="Map met PDF bestanden"
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Map voor output bestanden"
+    )
 
     args = parser.parse_args()
 
-    pdf_files = [
-        f for f in os.listdir(args.input_dir)
-        if f.lower().endswith(".pdf")
-    ]
+    input_dir = Path(args.input_dir)
+    output_dir = Path(args.output_dir)
 
-    print(f"📁 Gevonden PDF bestanden: {pdf_files}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    pdf_files = list(input_dir.glob("*.pdf"))
+
+    print(f"📁 Gevonden PDF bestanden: {[p.name for p in pdf_files]}")
 
     if not pdf_files:
-        raise Exception("❌ Geen PDF bestanden gevonden")
+        print("⚠️ Geen PDF bestanden gevonden")
+        return
 
-    for pdf_file in pdf_files:
+    for pdf_path in pdf_files:
+        try:
+            process_pdf(pdf_path, output_dir)
 
-        pdf_path = os.path.join(args.input_dir, pdf_file)
+        except Exception as e:
+            print(f"❌ Fout bij verwerken van {pdf_path.name}: {e}")
 
-        print(f"\n🚀 Start conversie: {pdf_file}")
-
-        inhoud, rows = extract_tables(pdf_path)
-
-        output_name = os.path.splitext(pdf_file)[0] + ".xlsx"
-
-        output_path = os.path.join(args.output_dir, output_name)
-
-        save_excel(output_path, inhoud, rows)
-
-        print(f"✅ Excel opgeslagen: {output_path}")
+    print("\n🎉 Conversie voltooid")
 
 
 if __name__ == "__main__":
