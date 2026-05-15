@@ -4,41 +4,56 @@ on:
   push:
     paths:
       - 'input/**/*.pdf'
+
   workflow_dispatch:
 
 jobs:
   convert:
+
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-      
-      - name: Install Python packages
+
+      - name: Install dependencies
         run: |
-          pip install pandas openpyxl odfpy pdfplumber
-      
+          pip install pandas openpyxl pdfplumber
+
       - name: Create directories
-        run: mkdir -p input output
-      
-      - name: Debug files
         run: |
-          echo "Input directory:"
-          ls -la input/ || echo "No input files yet"
-          echo "Source files:"
-          ls -la src/
-      
+          mkdir -p input
+          mkdir -p output
+
+      - name: Debug input files
+        run: |
+          echo "📂 INPUT:"
+          ls -lah input/
+
+          echo ""
+          echo "📂 SRC:"
+          ls -lah src/
+
       - name: Run converter
-        run: python src/convert.py --input-dir input --output-dir output
-      
-      - name: Upload Excel files
-        uses: actions/upload-artifact@v4
+        run: |
+          python src/convert.py \
+            --input-dir input \
+            --output-dir output
+
+      - name: Show output files
+        run: |
+          echo "📂 OUTPUT:"
+          ls -lah output/
+
+      - name: Upload Excel artifact
+        uses: actions/upload-artifact@v5
         with:
           name: converted-excel-files
           path: output/*.xlsx
-          if-no-files-found: warn
+          if-no-files-found: error
