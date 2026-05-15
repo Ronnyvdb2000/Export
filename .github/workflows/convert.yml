@@ -1,19 +1,16 @@
-name: Caonvert PDF to Excel
+name: Convert PDF to Excel (PyMuPDF engine)
 
 on:
   push:
     paths:
       - 'input/**/*.pdf'
-
   workflow_dispatch:
 
 jobs:
   convert:
-
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v5
 
@@ -24,27 +21,21 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas openpyxl pdfplumber
+          pip install pymupdf pandas openpyxl
 
       - name: Create directories
         run: |
           mkdir -p input
           mkdir -p output
 
-      - name: Debug input files
+      - name: Run new layout engine
         run: |
-          echo "📂 INPUT:"
-          ls -lah input/
-
-          echo ""
-          echo "📂 SRC:"
-          ls -lah src/
-
-      - name: Run converter
-        run: |
-          python src/convert.py \
-            --input-dir input \
-            --output-dir output
+          for f in input/*.pdf; do
+            echo "🚀 Verwerken: $f"
+            python src/layout_engine.py \
+              --input-pdf "$f" \
+              --output-xlsx "output/$(basename "${f%.pdf}.xlsx")"
+          done
 
       - name: Show output files
         run: |
