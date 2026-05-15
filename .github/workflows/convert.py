@@ -1,0 +1,43 @@
+name: Convert ODF to Excel
+
+on:
+  push:
+    paths:
+      - 'input/*.ods'
+      - 'input/*.odt'
+      - 'src/**'
+  workflow_dispatch:
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install pandas openpyxl odfpy
+          
+      - name: Create directories
+        run: |
+          mkdir -p input output
+          
+      - name: List files (debug)
+        run: |
+          echo "Input directory:"
+          ls -la input/ || echo "No input files yet"
+          echo "Source files:"
+          ls -la src/
+          
+      - name: Run conversion
+        run: python src/convert.py --input-dir input --output-dir output
+        
+      - name: Upload Excel files
+        uses: actions/upload-artifact@v4
+        with:
+          name: converted-excel-files
+          path: output/*.xlsx
