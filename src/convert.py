@@ -23,7 +23,6 @@ def clean_row(row):
 
     return cleaned
 
-
 def extract_tables(pdf_path):
     all_rows = []
     inhoud = []
@@ -34,10 +33,6 @@ def extract_tables(pdf_path):
 
         total_pages = len(pdf.pages)
 
-        if total_pages < 200:
-            raise Exception(
-                f"❌ PDF heeft slechts {total_pages} pagina's. Minimaal 200 vereist."
-            )
 
         for i, page in enumerate(pdf.pages, start=1):
 
