@@ -31,7 +31,7 @@ jobs:
       - name: Show input files
         run: |
           echo "📂 INPUT:"
-          ls -lah input/
+          ls -lah input/ || echo "⚠️ Geen bestanden in input/"
 
       - name: Stap 1 – PDF → ruwe Excel (layout_engine)
         run: |
@@ -64,4 +64,6 @@ jobs:
       - name: Upload Excel artifact
         uses: actions/upload-artifact@v5
         with:
-          name
+          name: converted-excel-files
+          path: output/*.xlsx
+          if-no-files-found: error
