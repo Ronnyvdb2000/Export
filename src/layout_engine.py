@@ -191,4 +191,123 @@ def _build_records(lines):
             continue
 
         # Nieuwe code
-        if code and CODE
+        if code and CODE_RE.match(code):
+            flush()
+            cur_code = code
+            if omschr: cur_omschr.append(omschr)
+            if extra:  cur_extra.append(extra)
+            if kenmrk: cur_kenmerk.append(kenmrk)
+            if eenhd:  cur_eenheid.append(eenhd)
+            if offrte: cur_offerte = offrte
+            continue
+
+        # Vervolgregels
+        if cur_code is not None:
+            if omschr: cur_omschr.append(omschr)
+            if extra:  cur_extra.append(extra)
+            if kenmrk: cur_kenmerk.append(kenmrk)
+            if eenhd:  cur_eenheid.append(eenhd)
+            if offrte and not cur_offerte:
+                cur_offerte = offrte
+
+    flush()
+    return records
+
+
+# ───────────────────────────────────────────────────────────────
+#  E X C E L   +   S Q L I T E
+# ───────────────────────────────────────────────────────────────
+
+def save_excel(df, output_path):
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Codelijst")
+        ws = writer.sheets["Codelijst"]
+
+        # Kolombreedtes
+        widths = [30, 14, 22, 6, 40, 55, 30, 12, 8]
+        for i, w in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+
+        # Header
+        hdr_fill = PatternFill("solid", fgColor="1F4E79")
+        hdr_font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+        for cell in ws[1]:
+            cell.fill = hdr_fill
+            cell.font = hdr_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        # Data
+        thin = Side(style="thin", color="D9D9D9")
+        brd = Border(bottom=thin)
+        dfont = Font(name="Arial", size=9)
+        wrap_cols = {5, 6, 7}
+
+        for ri, row in enumerate(ws.iter_rows(min_row=2), start=2):
+            fill = PatternFill("solid", fgColor="EBF0F7" if ri % 2 == 0 else "FFFFFF")
+            for cell in row:
+                cell.font = dfont
+                cell.fill = fill
+                cell.border = brd
+                cell.alignment = Alignment(vertical="top", wrap_text=(cell.column in wrap_cols))
+
+        ws.freeze_panes = "A2"
+
+    print(f"📄 Excel opgeslagen: {output_path}")
+
+
+def save_sqlite(df, output_path):
+    db_path = Path(output_path).with_suffix(".db")
+    conn = sqlite3.connect(db_path)
+
+    df.to_sql("vlif", conn, if_exists="replace", index=False)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_code ON vlif(code);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sf ON vlif(subfilter_nr);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hfd ON vlif(hoofdstuk);")
+
+    conn.commit()
+    conn.close()
+
+    print(f"🗄️ SQLite opgeslagen: {db_path}")
+
+
+# ───────────────────────────────────────────────────────────────
+#  M A I N
+# ───────────────────────────────────────────────────────────────
+
+def parse_pdf(pdf_path):
+    print(f"📘 Parsing: {pdf_path.name}")
+    spans = _extract_spans(pdf_path)
+    lines = _group_lines(spans)
+    records = _build_records(lines)
+    return records
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-pdf", required=True)
+    parser.add_argument("--output-xlsx", required=True)
+    args = parser.parse_args()
+
+    pdf_path = Path(args.input_pdf)
+    output_path = Path(args.output_xlsx)
+
+    ensure_output_dir(output_path)
+
+    records = parse_pdf(pdf_path)
+    df = pd.DataFrame(records)
+
+    # hiërarchie forward-fill
+    for col in ("hoofdstuk", "subfilter_nr", "subfilter_naam"):
+        df[col] = df[col].replace("", pd.NA).ffill().fillna("")
+
+    df = df[df["code"] != ""].reset_index(drop=True)
+
+    save_excel(df, output_path)
+    save_sqlite(df, output_path)
+
+    print("🎉 Klaar!")
+
+
+if __name__ == "__main__":
+    main()
