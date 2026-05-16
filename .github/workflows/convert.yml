@@ -30,24 +30,24 @@ jobs:
 
       - name: Show input files
         run: |
-          echo "ðŸ“‚ INPUT:"
+          echo "📂 INPUT:"
           ls -lah input/
 
-      - name: Stap 1 â€“ PDF â†’ ruwe Excel (layout_engine)
+      - name: Stap 1 – PDF → ruwe Excel (layout_engine)
         run: |
           for f in input/*.pdf; do
-            echo "ðŸš€ Verwerken: $f"
+            echo "🚀 Verwerken: $f"
             base=$(basename "${f%.pdf}")
             python src/layout_engine.py \
               --input-pdf "$f" \
               --output-xlsx "output/${base}_raw.xlsx"
           done
 
-      - name: Stap 2 â€“ Ruwe Excel â†’ tabblad-werkboek (build_excel)
+      - name: Stap 2 – Ruwe Excel → tabblad-werkboek (build_excel)
         run: |
           for f in output/*_raw.xlsx; do
             base=$(basename "${f%_raw.xlsx}")
-            echo "ðŸ“Š Opbouwen tabbladen: $base"
+            echo "📊 Opbouwen tabbladen: $base"
             python src/build_excel.py \
               --input "$f" \
               --output "output/${base}.xlsx"
@@ -58,12 +58,10 @@ jobs:
 
       - name: Show output files
         run: |
-          echo "ðŸ“‚ OUTPUT:"
+          echo "📂 OUTPUT:"
           ls -lah output/
 
       - name: Upload Excel artifact
         uses: actions/upload-artifact@v5
         with:
-          name: converted-excel-files
-          path: output/*.xlsx
-          if-no-files-found: error
+          name
