@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # nodig om te kunnen committen
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -31,7 +33,7 @@ jobs:
       - name: Show input files
         run: |
           echo "📂 INPUT:"
-          ls -lah input/ || echo "⚠️ Geen bestanden in input/"
+          ls -lah input/
 
       - name: Stap 1 – PDF → ruwe Excel (layout_engine)
         run: |
@@ -43,7 +45,7 @@ jobs:
               --output-xlsx "output/${base}_raw.xlsx"
           done
 
-      - name: Stap 2 – Ruwe Excel → tabblad-werkboek (build_excel)
+      - name: Stap 2 – Ruwe Excel → finale Excel + SQLite (build_excel)
         run: |
           for f in output/*_raw.xlsx; do
             base=$(basename "${f%_raw.xlsx}")
@@ -61,9 +63,27 @@ jobs:
           echo "📂 OUTPUT:"
           ls -lah output/
 
-      - name: Upload Excel artifact
+      # ⭐ NIEUW: commit output naar branch export-output
+      - name: Commit output to export-output branch
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git checkout -B export-output
+
+          mkdir -p output
+          cp -r output/* .
+
+          git add *.xlsx *.db || true
+
+          git commit -m "Automatische export $(date)" || true
+          git push origin export-output --force
+
+      - name: Upload Excel + SQLite artifacts
         uses: actions/upload-artifact@v5
         with:
-          name: converted-excel-files
-          path: output/*.xlsx
+          name: converted-files
+          path: |
+            output/*.xlsx
+            output/*.db
           if-no-files-found: error
