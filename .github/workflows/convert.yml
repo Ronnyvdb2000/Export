@@ -73,6 +73,10 @@ jobs:
 
           mkdir -p output
           cp -r output/* .
+          
+      mkdir -p output
+      touch output/.gitkeep
+      git add output/.gitkeep
 
           git add *.xlsx *.db || true
 
