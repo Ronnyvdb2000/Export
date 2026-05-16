@@ -6,6 +6,9 @@ on:
       - 'input/**/*.pdf'
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   convert:
     runs-on: ubuntu-latest
@@ -20,22 +23,38 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install pymupdf pandas openpyxl
+        run: pip install pymupdf pandas openpyxl
 
-      - name: Create directories
-        run: |
-          mkdir -p input
-          mkdir -p output
+      - name: Create output directory
+        run: mkdir -p output
 
-      - name: Run new layout engine
+      - name: Show input files
+        run: |
+          echo "📂 INPUT:"
+          ls -lah input/
+
+      - name: Stap 1 – PDF → ruwe Excel (layout_engine)
         run: |
           for f in input/*.pdf; do
             echo "🚀 Verwerken: $f"
+            base=$(basename "${f%.pdf}")
             python src/layout_engine.py \
               --input-pdf "$f" \
-              --output-xlsx "output/$(basename "${f%.pdf}.xlsx")"
+              --output-xlsx "output/${base}_raw.xlsx"
           done
+
+      - name: Stap 2 – Ruwe Excel → tabblad-werkboek (build_excel)
+        run: |
+          for f in output/*_raw.xlsx; do
+            base=$(basename "${f%_raw.xlsx}")
+            echo "📊 Opbouwen tabbladen: $base"
+            python src/build_excel.py \
+              --input "$f" \
+              --output "output/${base}.xlsx"
+          done
+
+      - name: Ruwe bestanden opruimen
+        run: rm -f output/*_raw.xlsx
 
       - name: Show output files
         run: |
