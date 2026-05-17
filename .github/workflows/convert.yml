@@ -72,11 +72,9 @@ jobs:
           git checkout -B export-output
 
           mkdir -p output
-          cp -r output/* .
-          
-      mkdir -p output
-      touch output/.gitkeep
-      git add output/.gitkeep
+          cp -r output/* output/
+          touch output/.gitkeep
+          git add output/.gitkeep
 
           git add *.xlsx *.db || true
 
