@@ -1,22 +1,18 @@
 """
-build_excel.py – Ruwe Excel → finale VLIF Excel
-
-Verbeteringen:
-- Subfilter = 1 gecombineerd veld
-- Geen alternerende kleuren meer
-- Correcte ondersteuning:
-    2.x Productieve investeringen
-    3.x AERi
-    3.5 NPI roerende technieken
-    4.x Niet-productieve investeringen
-- Apart tabblad voor roerende AEA-technieken
+build_excel.py
+Ruwe Excel -> finale VLIF Excel met:
 - Inhoudsopgave
+- Grote blokken (2 / 3 / 4)
+- Subfilter gecombineerd in 1 veld
+- Extra tabblad: Roerende AEA technieken
+- Wisselende rijkleuren verwijderd
 """
 
-import re
 import argparse
-import pandas as pd
+import re
+from pathlib import Path
 
+import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import (
     Font,
@@ -27,128 +23,58 @@ from openpyxl.styles import (
 )
 from openpyxl.utils import get_column_letter
 
-# ------------------------------------------------------------
-# Titel
-# ------------------------------------------------------------
+
+# =========================================================
+# TITELS
+# =========================================================
 
 TITLE_LINE1 = "VLIF CODELIJST"
-TITLE_LINE2 = "Automatisch geëxporteerd uit PDF"
-TITLE_LINE3 = "Conversie via PyMuPDF"
+TITLE_LINE2 = "Geldig voor blokperiode 20/04/2026 – 30/06/2026"
+TITLE_LINE3 = "Versie 20/04/2026"
 
-# ------------------------------------------------------------
-# Tabbladen
-# ------------------------------------------------------------
+
+# =========================================================
+# TABBLADEN
+# =========================================================
 
 TABS = [
 
-    # --------------------------------------------------------
-    # 2.x PRODUCTIEVE INVESTERINGEN
-    # --------------------------------------------------------
+    # -----------------------------------------------------
+    # BLOK 2
+    # -----------------------------------------------------
 
-    (
-        "2.1 Rundveestal",
-        "2.1",
-    ),
+    ("Rundveestal", "2.1"),
+    ("Varkensstal", "2.2"),
+    ("Pluimveestal", "2.3"),
+    ("Paardenstal", "2.4"),
+    ("Schapenstal", "2.5"),
+    ("Geitenstal", "2.6"),
+    ("Hertenstal", "2.7"),
+    ("Konijnenstal", "2.8"),
+    ("Serre", "2.9"),
+    ("Loods", "2.10"),
+    ("Onroerend buiten", "2.11"),
+    ("Machines en Varia", "2.12"),
 
-    (
-        "2.2 Varkensstal",
-        "2.2",
-    ),
+    # -----------------------------------------------------
+    # BLOK 3
+    # -----------------------------------------------------
 
-    (
-        "2.3 Pluimveestal",
-        "2.3",
-    ),
+    ("AERi Rundvee", "3.1"),
+    ("AERi Varkens", "3.2"),
+    ("AERi Pluimvee", "3.3"),
+    ("AERi Onroerend", "3.4"),
 
-    (
-        "2.4 Paardenstal",
-        "2.4",
-    ),
+    # NIEUW
+    ("Roerende AEA technieken", "3.5"),
 
-    (
-        "2.5 Schapenstal",
-        "2.5",
-    ),
+    # -----------------------------------------------------
+    # BLOK 4
+    # -----------------------------------------------------
 
-    (
-        "2.6 Geitenstal",
-        "2.6",
-    ),
-
-    (
-        "2.7 Hertenstal",
-        "2.7",
-    ),
-
-    (
-        "2.8 Konijnenstal",
-        "2.8",
-    ),
-
-    (
-        "2.9 Serre",
-        "2.9",
-    ),
-
-    (
-        "2.10 Loods",
-        "2.10",
-    ),
-
-    (
-        "2.11 Onroerend buiten",
-        "2.11",
-    ),
-
-    (
-        "2.12 Machines en varia",
-        "2.12",
-    ),
-
-    # --------------------------------------------------------
-    # 3.x AERi
-    # --------------------------------------------------------
-
-    (
-        "3.1 AERi Rundvee",
-        "3.1",
-    ),
-
-    (
-        "3.2 AERi Varkens",
-        "3.2",
-    ),
-
-    (
-        "3.3 AERi Pluimvee",
-        "3.3",
-    ),
-
-    (
-        "3.4 AERi Buiten",
-        "3.4",
-    ),
-
-    # --------------------------------------------------------
-    # 3.5 NPI
-    # --------------------------------------------------------
-
-    (
-        "3.5 Roerende AEA",
-        "3.5",
-    ),
-
-    # --------------------------------------------------------
-    # 4.x NIET-PRODUCTIEF
-    # --------------------------------------------------------
-
-    (
-        "4 Niet-productief",
-        "4",
-    ),
+    ("Niet-productieve investeringen", "4"),
 ]
 
-# ------------------------------------------------------------
 
 HEADERS = [
     "Subfilter",
@@ -160,42 +86,41 @@ HEADERS = [
     "Offerte",
 ]
 
-# ------------------------------------------------------------
 
-CLR_DARK = "1F4E79"
-CLR_LIGHT = "D9EAF7"
+# =========================================================
+# KLEUREN
+# =========================================================
+
+CLR_TITLE1 = "1F4E79"
+CLR_TITLE2 = "2E75B6"
+CLR_TITLE3 = "4472C4"
+
+CLR_HEADER = "1F4E79"
+CLR_SECTION = "D6E4F0"
+
 CLR_WHITE = "FFFFFF"
 
-# ------------------------------------------------------------
+
+# =========================================================
+# STIJLEN
+# =========================================================
+
+def thin_border():
+    s = Side(style="thin", color="B8CCE4")
+    return Border(top=s, bottom=s, left=s, right=s)
 
 
-def border():
+# =========================================================
+# DATA FIX
+# =========================================================
 
-    thin = Side(
-        style="thin",
-        color="B8CCE4"
-    )
+def fix_data(df):
 
-    return Border(
-        top=thin,
-        bottom=thin,
-        left=thin,
-        right=thin,
-    )
+    df = df.copy().fillna("")
 
-
-# ------------------------------------------------------------
-
-
-def fix_dataframe(df):
-
-    df = df.copy()
-
-    df = df.fillna("")
-
-    # --------------------------------------------------------
-    # OFFERTE fout corrigeren
-    # --------------------------------------------------------
+    # -----------------------------------------------------
+    # OFFERTE fix
+    # -----------------------------------------------------
 
     mask = df["eenheid"].str.upper().str.contains(
         "OFFERTE",
@@ -215,54 +140,38 @@ def fix_dataframe(df):
         .str.strip(" /")
     )
 
-    # --------------------------------------------------------
+    # -----------------------------------------------------
+    # subfilter combineren
+    # -----------------------------------------------------
 
-    mask2 = df["kenmerk"].str.upper().str.contains(
-        "OFFERTE",
-        na=False
+    df["subfilter"] = (
+        df["subfilter_nr"].fillna("").astype(str).str.strip()
+        + " "
+        + df["subfilter_naam"].fillna("").astype(str).str.strip()
+    ).str.strip()
+
+    # -----------------------------------------------------
+    # hoofdstuk prefix
+    # -----------------------------------------------------
+
+    df["prefix"] = (
+        df["hoofdstuk"]
+        .astype(str)
+        .str.extract(r"^(\d+(?:\.\d+)?)")
     )
-
-    df.loc[mask2, "offerte"] = "OFFERTE"
-
-    df.loc[mask2, "kenmerk"] = (
-        df.loc[mask2, "kenmerk"]
-        .str.replace(
-            r"\s*/?\s*OFFERTE\s*/?",
-            "",
-            regex=True,
-            flags=re.IGNORECASE
-        )
-        .str.strip(" /")
-    )
-
-    # --------------------------------------------------------
-
-    for col in [
-        "hoofdstuk",
-        "subfilter",
-    ]:
-
-        df[col] = (
-            df[col]
-            .replace("", pd.NA)
-            .ffill()
-            .fillna("")
-        )
 
     return df
 
 
-# ------------------------------------------------------------
+# =========================================================
+# TITELBLOK
+# =========================================================
 
-
-def write_title(ws, title):
+def write_title_rows(ws, title):
 
     ncols = len(HEADERS)
 
-    # --------------------------------------------------------
-    # Titel 1
-    # --------------------------------------------------------
-
+    # rij 1
     ws.append([TITLE_LINE1])
 
     ws.merge_cells(
@@ -276,14 +185,14 @@ def write_title(ws, title):
 
     c.font = Font(
         bold=True,
+        color="FFFFFF",
         size=16,
-        color=CLR_WHITE,
         name="Arial"
     )
 
     c.fill = PatternFill(
         "solid",
-        fgColor=CLR_DARK
+        fgColor=CLR_TITLE1
     )
 
     c.alignment = Alignment(
@@ -294,10 +203,7 @@ def write_title(ws, title):
 
     ws.row_dimensions[1].height = 24
 
-    # --------------------------------------------------------
-    # Titel 2
-    # --------------------------------------------------------
-
+    # rij 2
     ws.append([TITLE_LINE2])
 
     ws.merge_cells(
@@ -310,14 +216,14 @@ def write_title(ws, title):
     c = ws.cell(2, 1)
 
     c.font = Font(
+        color="FFFFFF",
         size=11,
-        color=CLR_WHITE,
         name="Arial"
     )
 
     c.fill = PatternFill(
         "solid",
-        fgColor="4472C4"
+        fgColor=CLR_TITLE2
     )
 
     c.alignment = Alignment(
@@ -328,11 +234,8 @@ def write_title(ws, title):
 
     ws.row_dimensions[2].height = 18
 
-    # --------------------------------------------------------
-    # Titel 3
-    # --------------------------------------------------------
-
-    ws.append([title])
+    # rij 3
+    ws.append([f"{TITLE_LINE3}   |   {title}"])
 
     ws.merge_cells(
         start_row=3,
@@ -345,14 +248,14 @@ def write_title(ws, title):
 
     c.font = Font(
         bold=True,
+        color="FFFFFF",
         size=10,
-        color=CLR_WHITE,
         name="Arial"
     )
 
     c.fill = PatternFill(
         "solid",
-        fgColor="5B9BD5"
+        fgColor=CLR_TITLE3
     )
 
     c.alignment = Alignment(
@@ -363,65 +266,54 @@ def write_title(ws, title):
 
     ws.row_dimensions[3].height = 16
 
-    # lege rij
-
     ws.append([])
 
 
-# ------------------------------------------------------------
-
+# =========================================================
+# TABBLAD SCHRIJVEN
+# =========================================================
 
 def write_sheet(ws, df, title):
 
-    write_title(ws, title)
+    write_title_rows(ws, title)
 
-    brd = border()
+    border = thin_border()
 
-    # --------------------------------------------------------
-    # Header
-    # --------------------------------------------------------
+    # -----------------------------------------------------
+    # headers
+    # -----------------------------------------------------
 
     ws.append(HEADERS)
 
     for col in range(1, len(HEADERS) + 1):
 
-        cell = ws.cell(5, col)
+        c = ws.cell(5, col)
 
-        cell.font = Font(
+        c.font = Font(
             bold=True,
-            color=CLR_WHITE,
+            color="FFFFFF",
             name="Arial",
             size=10
         )
 
-        cell.fill = PatternFill(
+        c.fill = PatternFill(
             "solid",
-            fgColor=CLR_DARK
+            fgColor=CLR_HEADER
         )
 
-        cell.border = brd
+        c.border = border
 
-        cell.alignment = Alignment(
+        c.alignment = Alignment(
             horizontal="center",
             vertical="center",
             wrap_text=True
         )
 
-    ws.row_dimensions[5].height = 26
+    # -----------------------------------------------------
+    # breedtes
+    # -----------------------------------------------------
 
-    # --------------------------------------------------------
-    # Kolombreedtes
-    # --------------------------------------------------------
-
-    widths = [
-        35,
-        10,
-        55,
-        55,
-        35,
-        14,
-        10,
-    ]
+    widths = [28, 10, 42, 52, 30, 12, 10]
 
     for i, w in enumerate(widths, start=1):
 
@@ -429,25 +321,25 @@ def write_sheet(ws, df, title):
             get_column_letter(i)
         ].width = w
 
-    # --------------------------------------------------------
-    # Data
-    # --------------------------------------------------------
+    # -----------------------------------------------------
+    # data
+    # -----------------------------------------------------
 
     row = 6
 
-    prev_sf = None
+    prev_sub = None
 
     for _, rec in df.iterrows():
 
-        sf = rec.get("subfilter", "")
+        sub = rec.get("subfilter", "").strip()
 
-        # ----------------------------------------------------
-        # Nieuwe subfilter-sectie
-        # ----------------------------------------------------
+        # ---------------------------------------------
+        # subfilter sectie
+        # ---------------------------------------------
 
-        if sf != prev_sf and sf:
+        if sub and sub != prev_sub:
 
-            ws.cell(row, 1, sf)
+            ws.cell(row, 1, sub)
 
             ws.merge_cells(
                 start_row=row,
@@ -460,17 +352,17 @@ def write_sheet(ws, df, title):
 
             c.font = Font(
                 bold=True,
-                color="1F1F1F",
                 name="Arial",
-                size=10
+                size=10,
+                color="1F4E79"
             )
 
             c.fill = PatternFill(
                 "solid",
-                fgColor=CLR_LIGHT
+                fgColor=CLR_SECTION
             )
 
-            c.border = brd
+            c.border = border
 
             c.alignment = Alignment(
                 horizontal="left",
@@ -478,56 +370,45 @@ def write_sheet(ws, df, title):
                 indent=1
             )
 
-            ws.row_dimensions[row].height = 18
-
             row += 1
 
-            prev_sf = sf
+            prev_sub = sub
 
-        # ----------------------------------------------------
-        # Dataregel
-        # ----------------------------------------------------
+        # ---------------------------------------------
+        # data rij
+        # ---------------------------------------------
 
         values = [
 
-            sf,
-
+            rec.get("subfilter", ""),
             rec.get("code", ""),
-
             rec.get("omschrijving", ""),
-
             rec.get("extra_info", ""),
-
             rec.get("kenmerk", ""),
-
             rec.get("eenheid", ""),
-
             rec.get("offerte", ""),
         ]
 
         for ci, val in enumerate(values, start=1):
 
-            cell = ws.cell(row, ci, val)
+            c = ws.cell(row, ci, val)
 
-            cell.font = Font(
+            c.font = Font(
                 name="Arial",
                 size=9
             )
 
-            # altijd wit
-            cell.fill = PatternFill(
+            c.fill = PatternFill(
                 "solid",
                 fgColor=CLR_WHITE
             )
 
-            cell.border = brd
+            c.border = border
 
-            cell.alignment = Alignment(
+            c.alignment = Alignment(
                 vertical="top",
                 wrap_text=True
             )
-
-        ws.row_dimensions[row].height = 15
 
         row += 1
 
@@ -536,83 +417,63 @@ def write_sheet(ws, df, title):
     ws.sheet_view.showGridLines = False
 
 
-# ------------------------------------------------------------
-
+# =========================================================
+# TOC
+# =========================================================
 
 def write_toc(ws, tabs):
 
     ws.title = "Inhoudsopgave"
 
-    write_title(ws, "Inhoudsopgave")
+    write_title_rows(ws, "Inhoudsopgave")
 
-    brd = border()
+    ws.append(["#", "Tabblad"])
 
-    headers = [
-        "#",
-        "Tabblad",
-    ]
+    border = thin_border()
 
-    ws.append(headers)
+    for col in range(1, 3):
 
-    for c in range(1, 3):
+        c = ws.cell(5, col)
 
-        cell = ws.cell(5, c)
+        c.font = Font(
+            bold=True,
+            color="FFFFFF"
+        )
+
+        c.fill = PatternFill(
+            "solid",
+            fgColor=CLR_HEADER
+        )
+
+        c.border = border
+
+    row = 6
+
+    for i, tab in enumerate(tabs, start=1):
+
+        ws.cell(row, 1, i)
+
+        cell = ws.cell(row, 2, tab)
+
+        cell.hyperlink = f"#{tab}!A1"
 
         cell.font = Font(
-            bold=True,
-            color=CLR_WHITE,
-            name="Arial"
+            color="1F4E79",
+            underline="single",
+            bold=True
         )
 
-        cell.fill = PatternFill(
-            "solid",
-            fgColor=CLR_DARK
-        )
-
-        cell.border = brd
-
-        cell.alignment = Alignment(
-            horizontal="center",
-            vertical="center"
-        )
+        row += 1
 
     ws.column_dimensions["A"].width = 6
     ws.column_dimensions["B"].width = 40
 
-    row = 6
-
-    for i, name in enumerate(tabs, start=1):
-
-        ws.cell(row, 1, i)
-
-        link = ws.cell(row, 2, name)
-
-        link.hyperlink = f"#{name}!A1"
-
-        link.font = Font(
-            color="0563C1",
-            underline="single",
-            bold=True,
-            name="Arial"
-        )
-
-        for c in range(1, 3):
-
-            cell = ws.cell(row, c)
-
-            cell.border = brd
-
-            cell.alignment = Alignment(
-                vertical="center"
-            )
-
-        row += 1
-
     ws.freeze_panes = "A6"
 
 
-# ------------------------------------------------------------
-
+# =========================================================
+# BUILD
+# =========================================================
 
 def build_excel(input_xlsx, output_xlsx):
 
@@ -623,7 +484,7 @@ def build_excel(input_xlsx, output_xlsx):
         dtype=str
     )
 
-    df = fix_dataframe(df)
+    df = fix_data(df)
 
     wb = Workbook()
 
@@ -636,16 +497,23 @@ def build_excel(input_xlsx, output_xlsx):
 
     created_tabs = []
 
-    # --------------------------------------------------------
-    # Alle tabbladen
-    # --------------------------------------------------------
+    # -----------------------------------------------------
+    # tabs
+    # -----------------------------------------------------
 
     for tab_name, prefix in TABS:
 
-        tab_df = df[
-            df["hoofdstuk"]
-            .str.startswith(prefix, na=False)
-        ].copy()
+        if prefix == "4":
+
+            tab_df = df[
+                df["prefix"].str.startswith("4", na=False)
+            ].copy()
+
+        else:
+
+            tab_df = df[
+                df["prefix"] == prefix
+            ].copy()
 
         if tab_df.empty:
 
@@ -668,7 +536,9 @@ def build_excel(input_xlsx, output_xlsx):
             f"{len(tab_df):5d} rijen"
         )
 
-    # --------------------------------------------------------
+    # -----------------------------------------------------
+    # inhoudsopgave
+    # -----------------------------------------------------
 
     write_toc(
         toc,
@@ -680,8 +550,9 @@ def build_excel(input_xlsx, output_xlsx):
     print(f"\n🎉 Opgeslagen: {output_xlsx}")
 
 
-# ------------------------------------------------------------
-
+# =========================================================
+# MAIN
+# =========================================================
 
 def main():
 
@@ -700,12 +571,10 @@ def main():
     args = parser.parse_args()
 
     build_excel(
-        args.input,
-        args.output
+        Path(args.input),
+        Path(args.output)
     )
 
-
-# ------------------------------------------------------------
 
 if __name__ == "__main__":
     main()
