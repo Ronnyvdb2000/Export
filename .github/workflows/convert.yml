@@ -17,7 +17,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0   # nodig om te kunnen committen
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -30,63 +30,26 @@ jobs:
       - name: Create output directory
         run: mkdir -p output
 
-      - name: Show input files
-        run: |
-          echo "📂 INPUT:"
-          ls -lah input/
-
-      - name: Stap 1 – PDF → ruwe Excel (layout_engine)
+      - name: Convert PDFs
         run: |
           for f in input/*.pdf; do
             echo "🚀 Verwerken: $f"
             base=$(basename "${f%.pdf}")
+
             python src/layout_engine.py \
               --input-pdf "$f" \
               --output-xlsx "output/${base}_raw.xlsx"
-          done
 
-      - name: Stap 2 – Ruwe Excel → finale Excel + SQLite (build_excel)
-        run: |
-          for f in output/*_raw.xlsx; do
-            base=$(basename "${f%_raw.xlsx}")
-            echo "📊 Opbouwen tabbladen: $base"
             python src/build_excel.py \
-              --input "$f" \
+              --input "output/${base}_raw.xlsx" \
               --output "output/${base}.xlsx"
           done
 
-      - name: Ruwe bestanden opruimen
+      - name: Cleanup raw files
         run: rm -f output/*_raw.xlsx
 
-      - name: Show output files
-        run: |
-          echo "📂 OUTPUT:"
-          ls -lah output/
-
-      # ⭐ Commit output naar branch export-output
-      - name: Commit output to export-output branch
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-          # Nieuwe branch (of overschrijven)
-          git checkout -B export-output
-
-          # Output-map in repo zetten
-          mkdir -p output
-
-          # Lege map committen indien nodig
-          touch output/.gitkeep
-
-          git add output/ || true
-          git commit -m "Automatische export $(date)" || true
-          git push origin export-output --force
-
-      - name: Upload Excel + SQLite artifacts
-        uses: actions/upload-artifact@v5
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: converted-files
-          path: |
-            output/*.xlsx
-            output/*.db
-          if-no-files-found: error
+          path: output/*.xlsx
