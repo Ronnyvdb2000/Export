@@ -1,39 +1,36 @@
-name: Convert PDF to Excel (PyMuPDF engine)
+name: Convert PDF to Excel
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - 'input/**/*.pdf'
-  workflow_dispatch:
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   convert:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install dependencies
-        run: pip install pymupdf pandas openpyxl
+      - name: Install deps
+        run: |
+          pip install pymupdf pandas openpyxl
 
-      - name: Create output directory
+      - name: Create output dir
         run: mkdir -p output
 
       - name: Convert PDFs
         run: |
           for f in input/*.pdf; do
-            echo "🚀 Verwerken: $f"
+            echo "Processing $f"
+
             base=$(basename "${f%.pdf}")
 
             python src/layout_engine.py \
@@ -45,10 +42,7 @@ jobs:
               --output "output/${base}.xlsx"
           done
 
-      - name: Cleanup raw files
-        run: rm -f output/*_raw.xlsx
-
-      - name: Upload artifacts
+      - name: Upload output
         uses: actions/upload-artifact@v4
         with:
           name: converted-files
