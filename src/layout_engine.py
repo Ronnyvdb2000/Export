@@ -1,97 +1,218 @@
-import argparse
+"""
+layout_engine.py
+VLIF4 PDF -> ruwe Excel
+"""
+
 import re
+import argparse
 from pathlib import Path
-import fitz  # PyMuPDF
+
+import fitz
 import pandas as pd
+from openpyxl.utils import get_column_letter
 
 
-def extract_pdf_data(pdf_path):
-    print(f"📖 PDF Analyseren met PyMuPDF: {pdf_path}")
+# =========================================================
+# X-RANGES
+# =========================================================
+
+X_SF_NR = (20, 80)
+X_SF_NAAM = (80, 220)
+
+X_CODE = (220, 260)
+
+X_OMSCHR = (260, 430)
+X_EXTRA = (430, 610)
+X_KENMERK = (610, 710)
+X_EENHEID = (710, 790)
+X_OFFERTE = (790, 860)
+
+Y_HEADER_MAX = 55
+Y_FOOTER_MIN = 520   # ⭐ FIX: 540 → 520
+
+
+# =========================================================
+# REGEX
+# =========================================================
+
+CODE_RE = re.compile(r"^\d+$")
+SUBFILTER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+HOOFDSTUK_RE = re.compile(r"^\d+\.\d+$")
+
+SKIP_VALUES = {
+    "",
+    "SUBFILTER",
+    "OMSCHRIJVING",
+    "EXTRA_INFO",
+    "KENMERK",
+    "EENHEID",
+    "OFFERTE",
+    "%",
+}
+
+
+# =========================================================
+# KOLOM DETECTIE
+# =========================================================
+
+def detect_column(x0):
+
+    if X_SF_NR[0] <= x0 < X_SF_NR[1]:
+        return "sf_nr"
+
+    if X_SF_NAAM[0] <= x0 < X_SF_NAAM[1]:
+        return "sf_naam"
+
+    if X_CODE[0] <= x0 < X_CODE[1]:
+        return "code"
+
+    if X_OMSCHR[0] <= x0 < X_EXTRA[0]:
+        return "omschrijving"
+
+    if X_EXTRA[0] <= x0 < X_KENMERK[0]:
+        return "extra_info"
+
+    if X_KENMERK[0] <= x0 < X_EENHEID[0]:
+        return "kenmerk"
+
+    if X_EENHEID[0] <= x0 < X_OFFERTE[0]:
+        return "eenheid"
+
+    if X_OFFERTE[0] <= x0:
+        return "offerte"
+
+    return "ignore"
+
+
+# =========================================================
+# PDF EXTRACT
+# =========================================================
+
+def extract_spans(pdf_path):
+
     doc = fitz.open(pdf_path)
-    all_rows = []
+    spans = []
 
-    # Regex om te kijken of een regel begint met een geldige code (bijv. 2.1, 2.12, 3.1.2, 4.1)
-    code_pattern = re.compile(r"^(\d+\.\d+(?:\.\d+)?|\d+)\s")
+    for page_no, page in enumerate(doc, start=1):
 
-    current_subfilter = ""
+        blocks = page.get_text(
+            "dict",
+            flags=fitz.TEXT_PRESERVE_WHITESPACE
+        )["blocks"]
 
-    for page_num, page in enumerate(doc, start=1):
-        text_instances = page.get_text("blocks")
-        # Sorteer blokken van boven naar beneden, links naar rechts
-        text_instances.sort(key=lambda x: (x[1], x[0]))
+        for block in blocks:
 
-        for block in text_instances:
-            line = block[4].strip()
-            if not line:
+            if block.get("type") != 0:
                 continue
 
-            # Splits de bloktekst op in afzonderlijke regels indien aanwezig
-            lines = [l.strip() for l in line.split("\n") if l.strip()]
+            for line in block["lines"]:
 
-            for l in lines:
-                # 1. Detecteer subfilters (hoofdstuktitels zonder code aan het begin)
-                if (
-                    ("HOOFDSTUK" in l.upper() or "STAL" in l.upper() or "AERi" in l)
-                    if not code_pattern.match(l)
-                    else False
-                ):
-                    current_subfilter = l
-                    continue
+                for span in line["spans"]:
 
-                # 2. Match data rijen die beginnen met een code
-                match = code_pattern.match(l)
-                if match:
-                    code = match.group(1)
-                    rest_of_text = l[len(code) :].strip()
+                    text = " ".join(span["text"].split())
+                    if not text:
+                        continue
 
-                    # Probeer eenheid/kenmerken te splitsen aan het einde van de regel (bijv. % of EUR)
-                    # Dit is een basis fallback-split; openpyxl / pandas regelt de rest in build_excel
-                    parts = rest_of_text.split("  ")
-                    parts = [p.strip() for p in parts if p.strip()]
+                    x0 = span["bbox"][0]
+                    y0 = span["bbox"][1]
 
-                    omschrijving = parts[0] if len(parts) > 0 else rest_of_text
-                    extra_info = parts[1] if len(parts) > 1 else ""
-                    kenmerk = parts[2] if len(parts) > 2 else ""
-                    eenheid = parts[3] if len(parts) > 3 else ""
+                    if y0 < Y_HEADER_MAX:
+                        continue
 
-                    all_rows.append(
-                        {
-                            "subfilter": current_subfilter,
-                            "Code": code,
-                            "Omschrijving": omschrijving,
-                            "Kolom_5": extra_info,  # extra_info mapping
-                            "Kolom_4": kenmerk,  # kenmerk mapping
-                            "Kolom_3": eenheid,  # eenheid mapping
-                        }
-                    )
+                    if y0 > Y_FOOTER_MIN:
+                        continue
 
-    print(f"✨ PDF succesvol uitgelezen. {len(all_rows)} datarijen gevonden.")
-    return pd.DataFrame(all_rows)
+                    col = detect_column(x0)
+                    if col == "ignore":
+                        continue
+
+                    size = span["size"]
+
+                    spans.append((
+                        page_no,
+                        round(y0, 1),
+                        round(x0, 1),
+                        col,
+                        size >= 14,
+                        text
+                    ))
+
+    spans.sort(key=lambda x: (x[0], x[1], x[2]))
+    return spans
 
 
-def build_excel(input_path, output_path):
-    # Extraheer data uit de PDF
-    df = extract_pdf_data(input_path)
+# =========================================================
+# GROUP LINES
+# =========================================================
 
-    # Als de dataframe leeg is, maak dan een lege template met de juiste kolommen
-    if df.empty:
-        df = pd.DataFrame(
-            columns=["subfilter", "Code", "Omschrijving", "Kolom_5", "Kolom_4", "Kolom_3"]
+def group_lines(spans):
+
+    lines = []
+    cur = None
+
+    for page, y, x0, col, big, text in spans:
+
+        new_line = (
+            cur is None
+            or page != cur["page"]
+            or abs(y - cur["y"]) > 3
         )
 
-    # Schrijf weg naar de rauwe Excel-bestandsindeling
-    df.to_excel(output_path, index=False)
-    print(f"💾 Ruwe data opgeslagen naar: {output_path}")
+        if new_line:
+            if cur:
+                lines.append(cur)
+
+            cur = {
+                "page": page,
+                "y": y,
+                "big": big
+            }
+
+        if big:
+            cur["big"] = True
+
+        if col in cur:
+            cur[col] += " " + text
+        else:
+            cur[col] = text
+
+    if cur:
+        lines.append(cur)
+
+    return lines
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Layout Engine voor VLIF PDF naar Excel")
-    parser.add_argument("--input", required=True, help="Pad naar het input PDF-bestand")
-    parser.add_argument("--output", required=True, help="Pad naar het output XLSX-bestand")
-    args = parser.parse_args()
+# =========================================================
+# PARSE
+# =========================================================
 
-    build_excel(Path(args.input), Path(args.output))
+def parse_lines(lines):
 
+    records = []
+    subfilters = []
 
-if __name__ == "__main__":
-    main()
+    current_hoofdstuk = ""
+    current_prefix = ""
+    pending_hoofdstuk = ""
+
+    cur_code = None
+    cur_page = 0
+    cur_y = 0
+
+    cur_omschrijving = []
+    cur_extra = []
+    cur_kenmerk = []
+    cur_eenheid = []
+    cur_offerte = ""
+
+    def flush():
+
+        nonlocal cur_code, cur_omschrijving, cur_extra, cur_kenmerk, cur_eenheid, cur_offerte
+
+        if cur_code is None:
+            return
+
+        records.append({
+            "hoofdstuk": current_hoofdstuk,
+            "subfilter": "",
+            "code": cur_code,
