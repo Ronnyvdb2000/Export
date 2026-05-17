@@ -1,141 +1,548 @@
+"""
+build_excel.py
+Ruwe Excel -> finale VLIF Excel met:
+- Inhoudsopgave
+- Grote blokken (2 / 3 / 4)
+- Subfilter gecombineerd in 1 veld
+- Extra tabblad: Roerende AEA technieken
+- Wisselende rijkleuren verwijderd
+"""
+
 import argparse
-import sys
+import re
 from pathlib import Path
-import openpyxl
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import (
+    Font,
+    PatternFill,
+    Alignment,
+    Border,
+    Side,
+)
+from openpyxl.utils import get_column_letter
 
 
-def verwerk_en_bouw_excel(input_path, output_path):
-    print(f"📖 Inlezen van ruwe data: {input_path}")
+# =========================================================
+# TITELS
+# =========================================================
 
-    # Lees de ruwe Excel in die door layout_engine.py is gegenereerd
-    try:
-        df = pd.read_excel(input_path, dtype=str)
-    except Exception as e:
-        print(f"❌ Fout bij het openen van de Excel-file: {e}")
-        sys.exit(1)
+TITLE_LINE1 = "VLIF CODELIJST"
+TITLE_LINE2 = "Geldig voor blokperiode 20/04/2026 – 30/06/2026"
+TITLE_LINE3 = "Versie 20/04/2026"
 
-    # Kolommapping fixen (van generieke Kolom_X naar wat build_excel verwacht)
-    rename_dict = {}
-    if "Kolom_3" in df.columns:
-        rename_dict["Kolom_3"] = "eenheid"
-    if "Kolom_4" in df.columns:
-        rename_dict["Kolom_4"] = "bedrag"
 
-    if rename_dict:
-        print(f"🔄 Kolommen hernoemen: {rename_dict}")
-        df = df.rename(columns=rename_dict)
+# =========================================================
+# TABBLADEN
+# =========================================================
 
-    # Zorg dat de cruciale kolommen aanwezig zijn, zelfs als ze leeg zijn
-    for col in ["subfilter", "Code", "Omschrijving", "eenheid", "bedrag"]:
+TABS = [
+
+    # -----------------------------------------------------
+    # BLOK 2
+    # -----------------------------------------------------
+
+    ("Rundveestal", "2.1"),
+    ("Varkensstal", "2.2"),
+    ("Pluimveestal", "2.3"),
+    ("Paardenstal", "2.4"),
+    ("Schapenstal", "2.5"),
+    ("Geitenstal", "2.6"),
+    ("Hertenstal", "2.7"),
+    ("Konijnenstal", "2.8"),
+    ("Serre", "2.9"),
+    ("Loods", "2.10"),
+    ("Onroerend buiten", "2.11"),
+    ("Machines en Varia", "2.12"),
+
+    # -----------------------------------------------------
+    # BLOK 3
+    # -----------------------------------------------------
+
+    ("AERi Rundvee", "3.1"),
+    ("AERi Varkens", "3.2"),
+    ("AERi Pluimvee", "3.3"),
+    ("AERi Onroerend", "3.4"),
+
+    # NIEUW
+    ("Roerende AEA technieken", "3.5"),
+
+    # -----------------------------------------------------
+    # BLOK 4
+    # -----------------------------------------------------
+
+    ("Niet-productieve investeringen", "4"),
+]
+
+
+HEADERS = [
+    "Subfilter",
+    "Code (%)",
+    "Omschrijving",
+    "Extra info",
+    "Kenmerk",
+    "Eenheid",
+    "Offerte",
+]
+
+
+# =========================================================
+# KLEUREN
+# =========================================================
+
+CLR_TITLE1 = "1F4E79"
+CLR_TITLE2 = "2E75B6"
+CLR_TITLE3 = "4472C4"
+
+CLR_HEADER = "1F4E79"
+CLR_SECTION = "D6E4F0"
+
+CLR_WHITE = "FFFFFF"
+
+
+# =========================================================
+# STIJLEN
+# =========================================================
+
+def thin_border():
+    s = Side(style="thin", color="B8CCE4")
+    return Border(top=s, bottom=s, left=s, right=s)
+
+
+# =========================================================
+# DATA FIX
+# =========================================================
+
+def fix_data(df):
+    df = df.copy().fillna("")
+
+    # 1. Breng de hoofdletter-kolommen van layout_engine naar de kleine letters die build_excel verwacht
+    rename_dict = {
+        "Subfilter": "subfilter",
+        "Code": "code",
+        "Omschrijving": "omschrijving",
+        "Eenheid": "eenheid",
+        "Bedrag": "bedrag"
+    }
+    df = df.rename(columns=rename_dict)
+
+    # 2. Zorg dat alle kolommen die in dit script gebruikt worden gegarandeerd bestaan
+    for col in ["subfilter", "code", "omschrijving", "extra_info", "kenmerk", "eenheid", "offerte", "hoofdstuk"]:
         if col not in df.columns:
             df[col] = ""
 
-    # Eventuele NaN waarden omzetten naar lege strings
-    df = df.fillna("")
+    # 3. Poets de data op
+    df["code"] = df["code"].astype(str).str.strip().str.rstrip(".")
+    df["subfilter"] = df["subfilter"].astype(str).str.strip()
+    df["omschrijving"] = df["omschrijving"].astype(str).str.strip()
 
-    print(f"📊 Excel opmaken en structureren...")
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "VLIF Codelijst"
+    # 4. FILTER DE PARSER-RUISTEKST (De regels met "kunnen worden. Enkel de productieve...")
+    # Geldige rijen moeten een echte code hebben. We skippen inleidingen en inhoudsopgaves.
+    df = df[df["code"] != ""]
+    df = df[~df["omschrijving"].str.contains("INHOUDSOPGAVE", na=False, case=False)]
+    df = df[~df["subfilter"].str.contains("kunnen worden", na=False, case=False)]
 
-    # Hulplijnen aanzetten
+    # 5. OFFERTE fix uit jouw originele code
+    mask = df["eenheid"].str.upper().str.contains("OFFERTE", na=False)
+    df.loc[mask, "offerte"] = "OFFERTE"
+    df.loc[mask, "eenheid"] = (
+        df.loc[mask, "eenheid"]
+        .str.replace(r"\s*/?\s*OFFERTE\s*/?", "", regex=True, flags=re.IGNORECASE)
+        .str.strip(" /")
+    )
+
+    # 6. PREFIX EXTRACTIE (Cruciaal voor de tabblad-verdeling)
+    # Een geldige specifieke code is minstens X.Y.Z (bijv 2.1.3). We pakken daar de X.Y (2.1) uit.
+    df["prefix"] = df["code"].str.extract(r"^(\d+\.\d+)")
+    
+    # Failsafe: als de code een puur getal is (zoals bij Niet-productieve '75' of '50'), 
+    # proberen we het hoofdstuk te bepalen op basis van wat er in 'subfilter' staat.
+    mask_np = df["prefix"].isna() | (df["prefix"] == "")
+    df.loc[mask_np, "prefix"] = df.loc[mask_np, "subfilter"].str.extract(r"^(\d+\.\d+)")
+    
+    # Als het om Blok 4 gaat (begint met 4), zetten we de prefix hard op "4"
+    df.loc[df["subfilter"].str.startswith("4.", na=False), "prefix"] = "4"
+    df.loc[df["code"].str.startswith("4.", na=False), "prefix"] = "4"
+
+    df["prefix"] = df["prefix"].fillna("")
+    
+    return df
+
+
+# =========================================================
+# TITELBLOK
+# =========================================================
+
+def write_title_rows(ws, title):
+
+    ncols = len(HEADERS)
+
+    # rij 1
+    ws.append([TITLE_LINE1])
+
+    ws.merge_cells(
+        start_row=1,
+        start_column=1,
+        end_row=1,
+        end_column=ncols
+    )
+
+    c = ws.cell(1, 1)
+
+    c.font = Font(
+        bold=True,
+        color="FFFFFF",
+        size=16,
+        name="Arial"
+    )
+
+    c.fill = PatternFill(
+        "solid",
+        fgColor=CLR_TITLE1
+    )
+
+    c.alignment = Alignment(
+        horizontal="left",
+        vertical="center",
+        indent=1
+    )
+
+    ws.row_dimensions[1].height = 24
+
+    # rij 2
+    ws.append([TITLE_LINE2])
+
+    ws.merge_cells(
+        start_row=2,
+        start_column=1,
+        end_row=2,
+        end_column=ncols
+    )
+
+    c = ws.cell(2, 1)
+
+    c.font = Font(
+        color="FFFFFF",
+        size=11,
+        name="Arial"
+    )
+
+    c.fill = PatternFill(
+        "solid",
+        fgColor=CLR_TITLE2
+    )
+
+    c.alignment = Alignment(
+        horizontal="left",
+        vertical="center",
+        indent=1
+    )
+
+    ws.row_dimensions[2].height = 18
+
+    # rij 3
+    ws.append([f"{TITLE_LINE3}   |   {title}"])
+
+    ws.merge_cells(
+        start_row=3,
+        start_column=1,
+        end_row=3,
+        end_column=ncols
+    )
+
+    c = ws.cell(3, 1)
+
+    c.font = Font(
+        bold=True,
+        color="FFFFFF",
+        size=10,
+        name="Arial"
+    )
+
+    c.fill = PatternFill(
+        "solid",
+        fgColor=CLR_TITLE3
+    )
+
+    c.alignment = Alignment(
+        horizontal="left",
+        vertical="center",
+        indent=1
+    )
+
+    ws.row_dimensions[3].height = 16
+
+    ws.append([])
+
+
+# =========================================================
+# TABBLAD SCHRIJVEN
+# =========================================================
+
+def write_sheet(ws, df, title):
+
+    write_title_rows(ws, title)
+
+    border = thin_border()
+
+    # -----------------------------------------------------
+    # headers
+    # -----------------------------------------------------
+
+    ws.append(HEADERS)
+
+    for col in range(1, len(HEADERS) + 1):
+
+        c = ws.cell(5, col)
+
+        c.font = Font(
+            bold=True,
+            color="FFFFFF",
+            name="Arial",
+            size=10
+        )
+
+        c.fill = PatternFill(
+            "solid",
+            fgColor=CLR_HEADER
+        )
+
+        c.border = border
+
+        c.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+            wrap_text=True
+        )
+
+    # -----------------------------------------------------
+    # breedtes
+    # -----------------------------------------------------
+
+    widths = [28, 10, 42, 52, 30, 12, 10]
+
+    for i, w in enumerate(widths, start=1):
+
+        ws.column_dimensions[
+            get_column_letter(i)
+        ].width = w
+
+    # -----------------------------------------------------
+    # data
+    # -----------------------------------------------------
+
+    row = 6
+
+    prev_sub = None
+
+    for _, rec in df.iterrows():
+
+        sub = rec.get("subfilter", "").strip()
+
+        # ---------------------------------------------
+        # subfilter sectie
+        # ---------------------------------------------
+
+        if sub and sub != prev_sub:
+
+            ws.cell(row, 1, sub)
+
+            ws.merge_cells(
+                start_row=row,
+                start_column=1,
+                end_row=row,
+                end_column=len(HEADERS)
+            )
+
+            c = ws.cell(row, 1)
+
+            c.font = Font(
+                bold=True,
+                name="Arial",
+                size=10,
+                color="1F4E79"
+            )
+
+            c.fill = PatternFill(
+                "solid",
+                fgColor=CLR_SECTION
+            )
+
+            c.border = border
+
+            c.alignment = Alignment(
+                horizontal="left",
+                vertical="center",
+                indent=1
+            )
+
+            row += 1
+
+            prev_sub = sub
+
+        # ---------------------------------------------
+        # data rij
+        # ---------------------------------------------
+
+        values = [
+            rec.get("subfilter", ""),
+            rec.get("code", ""),
+            rec.get("omschrijving", ""),
+            rec.get("extra_info", ""),
+            rec.get("kenmerk", ""),
+            rec.get("eenheid", ""),
+            rec.get("offerte", ""),
+        ]
+
+        for ci, val in enumerate(values, start=1):
+
+            c = ws.cell(row, ci, val)
+
+            c.font = Font(
+                name="Arial",
+                size=9
+            )
+
+            c.fill = PatternFill(
+                "solid",
+                fgColor=CLR_WHITE
+            )
+
+            c.border = border
+
+            c.alignment = Alignment(
+                vertical="top",
+                wrap_text=True
+            )
+
+        row += 1
+
+    ws.freeze_panes = "A6"
     ws.views.sheetView[0].showGridLines = True
 
-    # Stijlen definiëren
-    font_title = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
-    font_header = Font(name="Segoe UI", size=11, bold=True, color="2C3E50")
-    font_data = Font(name="Segoe UI", size=10, color="333333")
-    font_code = Font(name="Segoe UI", size=10, bold=True, color="2C3E50")
 
-    fill_title = PatternFill(
-        start_color="2C3E50", end_color="2C3E50", fill_type="solid"
-    )
-    fill_header = PatternFill(
-        start_color="ECF0F1", end_color="ECF0F1", fill_type="solid"
-    )
+# =========================================================
+# TOC
+# =========================================================
 
-    thin_border = Border(
-        left=Side(style="thin", color="BDC3C7"),
-        right=Side(style="thin", color="BDC3C7"),
-        top=Side(style="thin", color="BDC3C7"),
-        bottom=Side(style="thin", color="BDC3C7"),
-    )
+def write_toc(ws, tabs):
 
-    # Schrijf Headers
-    headers = ["Subfilter", "Code", "Omschrijving", "Eenheid", "Bedrag"]
-    ws.append(headers)
-    for col_num, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col_num)
-        cell.font = font_title
-        cell.fill = fill_title
-        cell.alignment = Alignment(
-            horizontal="center" if col_num in [1, 2, 4, 5] else "left",
-            vertical="center",
+    ws.title = "Inhoudsopgave"
+
+    write_title_rows(ws, "Inhoudsopgave")
+
+    ws.append(["#", "Tabblad"])
+
+    border = thin_border()
+
+    for col in range(1, 3):
+
+        c = ws.cell(5, col)
+
+        c.font = Font(
+            bold=True,
+            color="FFFFFF"
         )
 
-    # Data schrijven en opmaken
-    for idx, row in df.iterrows():
-        ws.append(
-            [
-                row["subfilter"],
-                row["Code"],
-                row["Omschrijving"],
-                row["eenheid"],
-                row["bedrag"],
-            ]
+        c.fill = PatternFill(
+            "solid",
+            fgColor=CLR_HEADER
         )
-        current_row = ws.max_row
 
-        # Pas stijlen toe per cel in de rij
-        for col_num in range(1, 6):
-            cell = ws.cell(row=current_row, column=col_num)
-            cell.font = font_code if col_num == 2 else font_data
-            cell.border = thin_border
+        c.border = border
 
-            # Uitlijning
-            if col_num in [1, 2, 4]:
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-            elif col_num == 5:
-                cell.alignment = Alignment(horizontal="right", vertical="center")
-            else:
-                cell.alignment = Alignment(
-                    horizontal="left", vertical="center", wrap_text=True
-                )
+    row = 6
 
-    # Kolombreedtes automatisch aanpassen
-    for col in ws.columns:
-        max_len = 0
-        col_letter = openpyxl.utils.get_column_letter(col[0].column)
-        for cell in col:
-            if cell.value:
-                # Voorkom gigantische kolommen bij lange omschrijvingen
-                val_len = len(str(cell.value))
-                if col_letter == "C" and val_len > 70:
-                    max_len = 70
-                else:
-                    max_len = max(max_len, val_len)
-        ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+    for i, tab in enumerate(tabs, start=1):
 
-    # Opslaan
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(output_path)
-    print(f"✅ Definitieve Excel succesvol gegenereerd: {output_path}")
+        ws.cell(row, 1, i)
 
+        cell = ws.cell(row, 2, tab)
+
+        cell.hyperlink = f"#'{tab}'!A1"
+
+        cell.font = Font(
+            color="1F4E79",
+            underline="single",
+            bold=True
+        )
+
+        row += 1
+
+    ws.column_dimensions["A"].width = 6
+    ws.column_dimensions["B"].width = 40
+
+    ws.freeze_panes = "A6"
+
+
+# =========================================================
+# BUILD
+# =========================================================
+
+def build_excel(input_xlsx, output_xlsx):
+
+    print(f"📖 Inlezen: {input_xlsx}")
+
+    df = pd.read_excel(
+        input_xlsx,
+        dtype=str
+    )
+
+    df = fix_data(df)
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    toc = wb.create_sheet("Inhoudsopgave", 0)
+    created_tabs = []
+
+    # -----------------------------------------------------
+    # tabs
+    # -----------------------------------------------------
+
+    for tab_name, prefix in TABS:
+
+        if prefix == "4":
+            tab_df = df[df["prefix"].str.startswith("4", na=False)].copy()
+        else:
+            tab_df = df[df["prefix"] == prefix].copy()
+
+        if tab_df.empty:
+            print(f"⚠️ Geen data voor {tab_name}")
+            continue
+
+        ws = wb.create_sheet(tab_name)
+        write_sheet(ws, tab_df, tab_name)
+        created_tabs.append(tab_name)
+
+        print(f"✅ {tab_name:30s} {len(tab_df):5d} rijen")
+
+    # -----------------------------------------------------
+    # inhoudsopgave
+    # -----------------------------------------------------
+
+    write_toc(toc, created_tabs)
+
+    wb.save(output_xlsx)
+    print(f"\n🎉 Opgeslagen: {output_xlsx}")
+
+
+# =========================================================
+# MAIN
+# =========================================================
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Bouw opgemaakte Excel vanaf ruwe data."
-    )
-    parser.add_argument("--input", required=True, help="Pad naar het input XLSX-bestand")
-    parser.add_argument(
-        "--output", required=True, help="Pad naar het definitieve XLSX-bestand"
-    )
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    verwerk_en_bouw_excel(args.input, args.output)
+    build_excel(
+        Path(args.input),
+        Path(args.output)
+    )
 
 
 if __name__ == "__main__":
