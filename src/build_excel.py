@@ -1,549 +1,259 @@
 """
-build_excel.py
-Ruwe Excel -> finale VLIF Excel met:
-- Inhoudsopgave
-- Grote blokken (2 / 3 / 4)
-- Subfilter gecombineerd in 1 veld
-- Extra tabblad: Roerende AEA technieken
-- Wisselende rijkleuren verwijderd
+build_excel.py – Ruwe Excel → gestructureerd werkboek met tabbladen
+
+Tabblad-indeling per blok:
+  Blok 2 (Productief): Rundveestal t/m Machines en Varia
+  Blok 3 (AERi):       AERi RV, AERi V, AERi Pl, AERi OG, AERi Roerend
+  Blok 4 (NPI):        NPI Onroerend, NPI Machines
 """
 
-import argparse
 import re
-from pathlib import Path
-
 import pandas as pd
 from openpyxl import Workbook
-from openpyxl.styles import (
-    Font,
-    PatternFill,
-    Alignment,
-    Border,
-    Side,
-)
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-
-# =========================================================
-# TITELS
-# =========================================================
-
+# Titeltekst (uit pagina 1 PDF)
 TITLE_LINE1 = "VLIF CODELIJST"
 TITLE_LINE2 = "Geldig voor blokperiode 20/04/2026 – 30/06/2026"
 TITLE_LINE3 = "Versie 20/04/2026"
 
-
-# =========================================================
-# TABBLADEN
-# =========================================================
-
+# (tabblad_naam, hoofdstuk_key, volledige_titel)
 TABS = [
-
-    # -----------------------------------------------------
-    # BLOK 2
-    # -----------------------------------------------------
-
-    ("Rundveestal", "2.1"),
-    ("Varkensstal", "2.2"),
-    ("Pluimveestal", "2.3"),
-    ("Paardenstal", "2.4"),
-    ("Schapenstal", "2.5"),
-    ("Geitenstal", "2.6"),
-    ("Hertenstal", "2.7"),
-    ("Konijnenstal", "2.8"),
-    ("Serre", "2.9"),
-    ("Loods", "2.10"),
-    ("Onroerend buiten", "2.11"),
-    ("Machines en Varia", "2.12"),
-
-    # -----------------------------------------------------
-    # BLOK 3
-    # -----------------------------------------------------
-
-    ("AERi Rundvee", "3.1"),
-    ("AERi Varkens", "3.2"),
-    ("AERi Pluimvee", "3.3"),
-    ("AERi Onroerend", "3.4"),
-
-    # NIEUW
-    ("Roerende AEA technieken", "3.5"),
-
-    # -----------------------------------------------------
-    # BLOK 4
-    # -----------------------------------------------------
-
-    ("Niet-productieve investeringen", "4"),
+    # Blok 2
+    ("Rundveestal",        "2.1 RUNDVEESTAL",                              "2.1 Rundveestal"),
+    ("Varkensstal",        "2.2 VARKENSSTAL",                              "2.2 Varkensstal"),
+    ("Pluimveestal",       "2.3 PLUIMVEESTAL",                             "2.3 Pluimveestal"),
+    ("Paardenstal",        "2.4 PAARDENSTAL",                              "2.4 Paardenstal"),
+    ("Schapenstal",        "2.5 SCHAPENSTAL",                              "2.5 Schapenstal"),
+    ("Geitenstal",         "2.6 GEITENSTAL",                               "2.6 Geitenstal"),
+    ("Hertenstal",         "2.7 HERTENSTAL",                               "2.7 Hertenstal"),
+    ("Konijnenstal",       "2.8 KONIJNENSTAL",                             "2.8 Konijnenstal"),
+    ("Serre",              "2.9 SERRE",                                    "2.9 Serre"),
+    ("Loods",              "2.10 LOODS",                                   "2.10 Loods"),
+    ("Onroerend buiten",   "2.11 ONROEREND BUITEN STAL/LOODS/SERRE",       "2.11 Onroerend buiten"),
+    ("Machines en Varia",  "2.12 MACHINES EN VARIA",                       "2.12 Machines en Varia"),
+    # Blok 3
+    ("AERi RV",            "3.1 RUNDVEESTAL",                              "3.1 AERi Rundveestal"),
+    ("AERi V",             "3.2 VARKENSSTAL",                              "3.2 AERi Varkensstal"),
+    ("AERi Pl",            "3.3 PLUIMVEESTAL",                             "3.3 AERi Pluimveestal"),
+    ("AERi OG",            "3.4 ONROEREND BUITEN NIEUWBOUWSTAL",           "3.4 AERi Onroerend buiten"),
+    ("AERi Roerend",       "3.5 ROERENDE AEA-TECHNIEKEN IN BESTAANDE STALLEN", "3.5 Roerende AEA-technieken"),
+    # Blok 4
+    ("NPI Onroerend",      "4.1 ONROEREND BUITEN STAL/LOODS/SERRE",        "4.1 NPI Onroerend buiten"),
+    ("NPI Machines",       "4.2 MACHINES EN VARIA",                        "4.2 NPI Machines en Varia"),
 ]
 
+HEADERS = ["Subfilter", "Code (%)", "Omschrijving", "Extra info",
+           "Kenmerk", "Eenheid", "Offerte"]
 
-HEADERS = [
-    "Subfilter",
-    "Code (%)",
-    "Omschrijving",
-    "Extra info",
-    "Kenmerk",
-    "Eenheid",
-    "Offerte",
-]
-
-
-# =========================================================
-# KLEUREN
-# =========================================================
-
-CLR_TITLE1 = "1F4E79"
-CLR_TITLE2 = "2E75B6"
-CLR_TITLE3 = "4472C4"
-
-CLR_HEADER = "1F4E79"
-CLR_SECTION = "D6E4F0"
-
-CLR_WHITE = "FFFFFF"
+# Kleuren
+C_DARK   = "1F4E79"
+C_MID    = "2E75B6"
+C_LIGHT  = "4472C4"
+C_SEC    = "D6E4F0"
+C_ALT    = "EBF0F7"
+C_WHITE  = "FFFFFF"
+C_TOC    = "2E75B6"
+C_TOC_LT = "DEEAF1"
 
 
-# =========================================================
-# STIJLEN
-# =========================================================
-
-def thin_border():
-    s = Side(style="thin", color="B8CCE4")
-    return Border(top=s, bottom=s, left=s, right=s)
+def _brd():
+    t = Side(style="thin", color="B8CCE4")
+    return Border(top=t, bottom=t, left=t, right=t)
 
 
-# =========================================================
-# DATA FIX
-# =========================================================
-
-def fix_data(df):
+def _fix(df):
     df = df.copy().fillna("")
-
-    # 1. Breng de hoofdletter-kolommen van layout_engine naar de kleine letters die build_excel verwacht
-    rename_dict = {
-        "Subfilter": "subfilter",
-        "Code": "code",
-        "Omschrijving": "omschrijving",
-        "Eenheid": "eenheid",
-        "Bedrag": "bedrag"
-    }
-    df = df.rename(columns=rename_dict)
-
-    # 2. Zorg dat alle kolommen die in dit script gebruikt worden gegarandeerd bestaan
-    for col in ["subfilter", "code", "omschrijving", "extra_info", "kenmerk", "eenheid", "offerte", "hoofdstuk"]:
-        if col not in df.columns:
-            df[col] = ""
-
-    # 3. Poets de data op
-    df["code"] = df["code"].astype(str).str.strip().str.rstrip(".")
-    df["subfilter"] = df["subfilter"].astype(str).str.strip()
-    df["omschrijving"] = df["omschrijving"].astype(str).str.strip()
-
-    # 4. FILTER DE PARSER-RUISTEKST (De regels met "kunnen worden. Enkel de productieve...")
-    # Geldige rijen moeten een echte code hebben. We skippen inleidingen en inhoudsopgaves.
-    df = df[df["code"] != ""]
-    df = df[~df["omschrijving"].str.contains("INHOUDSOPGAVE", na=False, case=False)]
-    df = df[~df["subfilter"].str.contains("kunnen worden", na=False, case=False)]
-
-    # 5. OFFERTE fix uit jouw originele code
-    mask = df["eenheid"].str.upper().str.contains("OFFERTE", na=False)
-    df.loc[mask, "offerte"] = "OFFERTE"
-    df.loc[mask, "eenheid"] = (
-        df.loc[mask, "eenheid"]
-        .str.replace(r"\s*/?\s*OFFERTE\s*/?", "", regex=True, flags=re.IGNORECASE)
-        .str.strip(" /")
-    )
-
-    # 6. PREFIX EXTRACTIE (Cruciaal voor de tabblad-verdeling)
-    # Een geldige specifieke code is minstens X.Y.Z (bijv 2.1.3). We pakken daar de X.Y (2.1) uit.
-    df["prefix"] = df["code"].str.extract(r"^(\d+\.\d+)")
-    
-    # Failsafe: als de code een puur getal is (zoals bij Niet-productieve '75' of '50'), 
-    # proberen we het hoofdstuk te bepalen op basis van wat er in 'subfilter' staat.
-    mask_np = df["prefix"].isna() | (df["prefix"] == "")
-    df.loc[mask_np, "prefix"] = df.loc[mask_np, "subfilter"].str.extract(r"^(\d+\.\d+)")
-    
-    # Als het om Blok 4 gaat (begint met 4), zetten we de prefix hard op "4"
-    df.loc[df["subfilter"].str.startswith("4.", na=False), "prefix"] = "4"
-    df.loc[df["code"].str.startswith("4.", na=False), "prefix"] = "4"
-
-    df["prefix"] = df["prefix"].fillna("")
-    
+    # OFFERTE in eenheid of kenmerk → verplaats
+    for col in ("eenheid", "kenmerk"):
+        mask = df[col].str.upper().str.contains("OFFERTE", na=False)
+        df.loc[mask, "offerte"] = "OFFERTE"
+        df.loc[mask, col] = df.loc[mask, col].str.replace(
+            r"\s*/?\s*OFFERTE\s*/?", "", regex=True, flags=re.IGNORECASE
+        ).str.strip(" /")
     return df
 
 
-# =========================================================
-# TITELBLOK
-# =========================================================
-
-def write_title_rows(ws, title):
-
-    ncols = len(HEADERS)
-
-    # rij 1
+def _title_rows(ws, tab_title, ncols):
     ws.append([TITLE_LINE1])
-
-    ws.merge_cells(
-        start_row=1,
-        start_column=1,
-        end_row=1,
-        end_column=ncols
-    )
-
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=ncols)
     c = ws.cell(1, 1)
+    c.font = Font(bold=True, name="Arial", size=15, color="FFFFFF")
+    c.fill = PatternFill("solid", fgColor=C_DARK)
+    c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws.row_dimensions[1].height = 22
 
-    c.font = Font(
-        bold=True,
-        color="FFFFFF",
-        size=16,
-        name="Arial"
-    )
-
-    c.fill = PatternFill(
-        "solid",
-        fgColor=CLR_TITLE1
-    )
-
-    c.alignment = Alignment(
-        horizontal="left",
-        vertical="center",
-        indent=1
-    )
-
-    ws.row_dimensions[1].height = 24
-
-    # rij 2
     ws.append([TITLE_LINE2])
-
-    ws.merge_cells(
-        start_row=2,
-        start_column=1,
-        end_row=2,
-        end_column=ncols
-    )
-
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=ncols)
     c = ws.cell(2, 1)
+    c.font = Font(name="Arial", size=10, color="FFFFFF")
+    c.fill = PatternFill("solid", fgColor=C_MID)
+    c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws.row_dimensions[2].height = 16
 
-    c.font = Font(
-        color="FFFFFF",
-        size=11,
-        name="Arial"
-    )
-
-    c.fill = PatternFill(
-        "solid",
-        fgColor=CLR_TITLE2
-    )
-
-    c.alignment = Alignment(
-        horizontal="left",
-        vertical="center",
-        indent=1
-    )
-
-    ws.row_dimensions[2].height = 18
-
-    # rij 3
-    ws.append([f"{TITLE_LINE3}   |   {title}"])
-
-    ws.merge_cells(
-        start_row=3,
-        start_column=1,
-        end_row=3,
-        end_column=ncols
-    )
-
+    ws.append([f"{TITLE_LINE3}   |   {tab_title}"])
+    ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=ncols)
     c = ws.cell(3, 1)
-
-    c.font = Font(
-        bold=True,
-        color="FFFFFF",
-        size=10,
-        name="Arial"
-    )
-
-    c.fill = PatternFill(
-        "solid",
-        fgColor=CLR_TITLE3
-    )
-
-    c.alignment = Alignment(
-        horizontal="left",
-        vertical="center",
-        indent=1
-    )
-
-    ws.row_dimensions[3].height = 16
+    c.font = Font(bold=True, name="Arial", size=9, color="FFFFFF")
+    c.fill = PatternFill("solid", fgColor=C_LIGHT)
+    c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws.row_dimensions[3].height = 14
 
     ws.append([])
+    ws.row_dimensions[4].height = 5
 
 
-# =========================================================
-# TABBLAD SCHRIJVEN
-# =========================================================
+def _data_sheet(ws, tab_df, tab_title):
+    nc = len(HEADERS)
+    _title_rows(ws, tab_title, nc)
 
-def write_sheet(ws, df, title):
+    hdr_fill = PatternFill("solid", fgColor=C_DARK)
+    hdr_font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+    sec_fill = PatternFill("solid", fgColor=C_SEC)
+    sec_font = Font(bold=True, name="Arial", size=10, color=C_DARK)
+    dat_font = Font(name="Arial", size=9)
+    brd = _brd()
+    wrap_cols = {3, 4, 5}   # omschrijving, extra_info, kenmerk
 
-    write_title_rows(ws, title)
-
-    border = thin_border()
-
-    # -----------------------------------------------------
-    # headers
-    # -----------------------------------------------------
-
+    # Header rij 5
     ws.append(HEADERS)
+    for c in range(1, nc + 1):
+        cell = ws.cell(5, c)
+        cell.font = hdr_font
+        cell.fill = hdr_fill
+        cell.border = brd
+        cell.alignment = Alignment(horizontal="center", vertical="center",
+                                   wrap_text=True)
+    ws.row_dimensions[5].height = 24
 
-    for col in range(1, len(HEADERS) + 1):
+    # Kolombreedtes
+    for i, w in enumerate([30, 7, 42, 52, 28, 12, 9], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
 
-        c = ws.cell(5, col)
+    row_idx  = 6
+    alt      = False
+    prev_sf  = None
 
-        c.font = Font(
-            bold=True,
-            color="FFFFFF",
-            name="Arial",
-            size=10
-        )
+    for _, rec in tab_df.iterrows():
+        sf = rec.get("subfilter", "")
 
-        c.fill = PatternFill(
-            "solid",
-            fgColor=CLR_HEADER
-        )
+        # Subfilter-sectieregel
+        if sf != prev_sf and sf:
+            ws.cell(row_idx, 1, sf)
+            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=nc)
+            cell = ws.cell(row_idx, 1)
+            cell.font      = sec_font
+            cell.fill      = sec_fill
+            cell.border    = brd
+            cell.alignment = Alignment(horizontal="left", vertical="center",
+                                       indent=1)
+            ws.row_dimensions[row_idx].height = 16
+            row_idx += 1
+            prev_sf = sf
+            alt = False
 
-        c.border = border
-
-        c.alignment = Alignment(
-            horizontal="center",
-            vertical="center",
-            wrap_text=True
-        )
-
-    # -----------------------------------------------------
-    # breedtes
-    # -----------------------------------------------------
-
-    widths = [28, 10, 42, 52, 30, 12, 10]
-
-    for i, w in enumerate(widths, start=1):
-
-        ws.column_dimensions[
-            get_column_letter(i)
-        ].width = w
-
-    # -----------------------------------------------------
-    # data
-    # -----------------------------------------------------
-
-    row = 6
-
-    prev_sub = None
-
-    for _, rec in df.iterrows():
-
-        sub = rec.get("subfilter", "").strip()
-
-        # ---------------------------------------------
-        # subfilter sectie
-        # ---------------------------------------------
-
-        if sub and sub != prev_sub:
-
-            ws.cell(row, 1, sub)
-
-            ws.merge_cells(
-                start_row=row,
-                start_column=1,
-                end_row=row,
-                end_column=len(HEADERS)
-            )
-
-            c = ws.cell(row, 1)
-
-            c.font = Font(
-                bold=True,
-                name="Arial",
-                size=10,
-                color="1F4E79"
-            )
-
-            c.fill = PatternFill(
-                "solid",
-                fgColor=CLR_SECTION
-            )
-
-            c.border = border
-
-            c.alignment = Alignment(
-                horizontal="left",
-                vertical="center",
-                indent=1
-            )
-
-            row += 1
-
-            prev_sub = sub
-
-        # ---------------------------------------------
-        # data rij
-        # ---------------------------------------------
-
+        # Data-rij
+        fill = PatternFill("solid", fgColor=C_ALT if alt else C_WHITE)
         values = [
-            rec.get("subfilter", ""),
-            rec.get("code", ""),
+            sf,
+            rec.get("code",         ""),
             rec.get("omschrijving", ""),
-            rec.get("extra_info", ""),
-            rec.get("kenmerk", ""),
-            rec.get("eenheid", ""),
-            rec.get("offerte", ""),
+            rec.get("extra_info",   ""),
+            rec.get("kenmerk",      ""),
+            rec.get("eenheid",      ""),
+            rec.get("offerte",      ""),
         ]
-
         for ci, val in enumerate(values, start=1):
-
-            c = ws.cell(row, ci, val)
-
-            c.font = Font(
-                name="Arial",
-                size=9
-            )
-
-            c.fill = PatternFill(
-                "solid",
-                fgColor=CLR_WHITE
-            )
-
-            c.border = border
-
-            c.alignment = Alignment(
-                vertical="top",
-                wrap_text=True
-            )
-
-        row += 1
+            cell = ws.cell(row_idx, ci, val or "")
+            cell.font      = dat_font
+            cell.fill      = fill
+            cell.border    = brd
+            cell.alignment = Alignment(vertical="top",
+                                       wrap_text=(ci in wrap_cols))
+        ws.row_dimensions[row_idx].height = 15
+        row_idx += 1
+        alt = not alt
 
     ws.freeze_panes = "A6"
-    ws.views.sheetView[0].showGridLines = True
+    ws.sheet_view.showGridLines = False
 
 
-# =========================================================
-# TOC
-# =========================================================
-
-def write_toc(ws, tabs):
-
+def _toc(ws, tabs_present):
     ws.title = "Inhoudsopgave"
+    ws.sheet_view.showGridLines = False
+    nc = 3
+    _title_rows(ws, "Inhoudsopgave", nc)
 
-    write_title_rows(ws, "Inhoudsopgave")
+    ws.append(["#", "Tabblad", "Sectie"])
+    for c in range(1, 4):
+        cell = ws.cell(5, c)
+        cell.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+        cell.fill = PatternFill("solid", fgColor=C_TOC)
+        cell.border = _brd()
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[5].height = 22
 
-    ws.append(["#", "Tabblad"])
+    ws.column_dimensions["A"].width = 5
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 48
 
-    border = thin_border()
+    lnk_font = Font(name="Arial", size=10, color=C_DARK,
+                    underline="single", bold=True)
+    txt_font  = Font(name="Arial", size=10)
+    brd = _brd()
 
-    for col in range(1, 3):
+    for i, (tab_name, _, full_title) in enumerate(tabs_present, start=1):
+        row = 5 + i
+        bg  = C_TOC_LT if i % 2 == 0 else C_WHITE
+        fill = PatternFill("solid", fgColor=bg)
 
-        c = ws.cell(5, col)
+        n = ws.cell(row, 1, i)
+        n.font = txt_font; n.fill = fill; n.border = brd
+        n.alignment = Alignment(horizontal="center", vertical="center")
 
-        c.font = Font(
-            bold=True,
-            color="FFFFFF"
-        )
+        lnk = ws.cell(row, 2, tab_name)
+        lnk.font = lnk_font; lnk.fill = fill; lnk.border = brd
+        lnk.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        lnk.hyperlink = f"#{tab_name}!A1"
 
-        c.fill = PatternFill(
-            "solid",
-            fgColor=CLR_HEADER
-        )
-
-        c.border = border
-
-    row = 6
-
-    for i, tab in enumerate(tabs, start=1):
-
-        ws.cell(row, 1, i)
-
-        cell = ws.cell(row, 2, tab)
-
-        cell.hyperlink = f"#'{tab}'!A1"
-
-        cell.font = Font(
-            color="1F4E79",
-            underline="single",
-            bold=True
-        )
-
-        row += 1
-
-    ws.column_dimensions["A"].width = 6
-    ws.column_dimensions["B"].width = 40
+        t = ws.cell(row, 3, full_title)
+        t.font = txt_font; t.fill = fill; t.border = brd
+        t.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        ws.row_dimensions[row].height = 18
 
     ws.freeze_panes = "A6"
 
 
-# =========================================================
-# BUILD
-# =========================================================
-
-def build_excel(input_xlsx, output_xlsx):
-
+def build(input_xlsx, output_xlsx):
     print(f"📖 Inlezen: {input_xlsx}")
-
-    df = pd.read_excel(
-        input_xlsx,
-        dtype=str
-    )
-
-    df = fix_data(df)
+    df = pd.read_excel(input_xlsx, dtype=str)
+    df = _fix(df)
 
     wb = Workbook()
     wb.remove(wb.active)
+    toc_ws = wb.create_sheet("Inhoudsopgave", 0)
 
-    toc = wb.create_sheet("Inhoudsopgave", 0)
-    created_tabs = []
-
-    # -----------------------------------------------------
-    # tabs
-    # -----------------------------------------------------
-
-    for tab_name, prefix in TABS:
-
-        if prefix == "4":
-            tab_df = df[df["prefix"].str.startswith("4", na=False)].copy()
-        else:
-            tab_df = df[df["prefix"] == prefix].copy()
-
+    tabs_present = []
+    for tab_name, hoofd_key, full_title in TABS:
+        tab_df = df[df["hoofdstuk"] == hoofd_key].copy()
         if tab_df.empty:
-            print(f"⚠️ Geen data voor {tab_name}")
+            print(f"   ⚠️  Leeg: {hoofd_key}")
             continue
-
         ws = wb.create_sheet(tab_name)
-        write_sheet(ws, tab_df, tab_name)
-        created_tabs.append(tab_name)
+        _data_sheet(ws, tab_df, full_title)
+        tabs_present.append((tab_name, hoofd_key, full_title))
+        print(f"   ✅ {tab_name:22s}  {len(tab_df):4d} rijen")
 
-        print(f"✅ {tab_name:30s} {len(tab_df):5d} rijen")
-
-    # -----------------------------------------------------
-    # inhoudsopgave
-    # -----------------------------------------------------
-
-    write_toc(toc, created_tabs)
-
+    _toc(toc_ws, tabs_present)
     wb.save(output_xlsx)
     print(f"\n🎉 Opgeslagen: {output_xlsx}")
 
 
-# =========================================================
-# MAIN
-# =========================================================
-
-def main():
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--output", required=True)
-    args = parser.parse_args()
-
-    build_excel(
-        Path(args.input),
-        Path(args.output)
-    )
-
-
 if __name__ == "__main__":
-    main()
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--input",  required=True)
+    p.add_argument("--output", required=True)
+    a = p.parse_args()
+    build(a.input, a.output)
