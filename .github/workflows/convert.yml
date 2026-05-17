@@ -63,21 +63,23 @@ jobs:
           echo "📂 OUTPUT:"
           ls -lah output/
 
-      # ⭐ NIEUW: commit output naar branch export-output
+      # ⭐ Commit output naar branch export-output
       - name: Commit output to export-output branch
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
+          # Nieuwe branch (of overschrijven)
           git checkout -B export-output
 
+          # Output-map in repo zetten
           mkdir -p output
           cp -r output/* output/
+
+          # Lege map committen indien nodig
           touch output/.gitkeep
-          git add output/.gitkeep
 
-          git add *.xlsx *.db || true
-
+          git add output/ || true
           git commit -m "Automatische export $(date)" || true
           git push origin export-output --force
 
