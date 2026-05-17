@@ -1,599 +1,105 @@
-"""
-layout_engine.py
-VLIF4 PDF -> ruwe Excel
-
-Features:
-- Ondersteunt blok 2, 3 en 4
-- Ondersteunt AERi + NPI + roerende AEA technieken
-- Dynamische subfilters
-- Robuustere x-ranges
-- Werkt met VLIF4 2026 PDF's
-"""
-
-import re
 import argparse
-from pathlib import Path
-
-import fitz
+import os
+import re
+import fitz  # PyMuPDF
 import pandas as pd
-from openpyxl.utils import get_column_letter
 
 
-# =========================================================
-# X-RANGES
-# =========================================================
-
-X_SF_NR = (20, 80)
-X_SF_NAAM = (80, 220)
-
-X_CODE = (220, 260)
-
-X_OMSCHR = (260, 430)
-X_EXTRA = (430, 610)
-X_KENMERK = (610, 710)
-X_EENHEID = (710, 790)
-X_OFFERTE = (790, 860)
-
-Y_HEADER_MAX = 55
-Y_FOOTER_MIN = 540
-
-
-# =========================================================
-# REGEX
-# =========================================================
-
-CODE_RE = re.compile(r"^\d+$")
-
-SUBFILTER_RE = re.compile(r"^\d+\.\d+\.\d+$")
-
-HOOFDSTUK_RE = re.compile(r"^\d+\.\d+$")
-
-
-SKIP_VALUES = {
-    "",
-    "SUBFILTER",
-    "OMSCHRIJVING",
-    "EXTRA_INFO",
-    "KENMERK",
-    "EENHEID",
-    "OFFERTE",
-    "%",
-}
-
-
-# =========================================================
-# KOLOM DETECTIE
-# =========================================================
-
-def detect_column(x0):
-
-    if X_SF_NR[0] <= x0 < X_SF_NR[1]:
-        return "sf_nr"
-
-    if X_SF_NAAM[0] <= x0 < X_SF_NAAM[1]:
-        return "sf_naam"
-
-    if X_CODE[0] <= x0 < X_CODE[1]:
-        return "code"
-
-    if X_OMSCHR[0] <= x0 < X_EXTRA[0]:
-        return "omschrijving"
-
-    if X_EXTRA[0] <= x0 < X_KENMERK[0]:
-        return "extra_info"
-
-    if X_KENMERK[0] <= x0 < X_EENHEID[0]:
-        return "kenmerk"
-
-    if X_EENHEID[0] <= x0 < X_OFFERTE[0]:
-        return "eenheid"
-
-    if X_OFFERTE[0] <= x0:
-        return "offerte"
-
-    return "ignore"
-
-
-# =========================================================
-# PDF EXTRACT
-# =========================================================
-
-def extract_spans(pdf_path):
-
+def extract_vlif_table(pdf_path):
+    print(f"📄 Analyseren van PDF: {pdf_path}")
     doc = fitz.open(pdf_path)
-
-    spans = []
-
-    for page_no, page in enumerate(doc, start=1):
-
-        blocks = page.get_text(
-            "dict",
-            flags=fitz.TEXT_PRESERVE_WHITESPACE
-        )["blocks"]
-
-        for block in blocks:
-
-            if block.get("type") != 0:
-                continue
-
-            for line in block["lines"]:
-
-                for span in line["spans"]:
-
-                    text = " ".join(span["text"].split())
-
-                    if not text:
-                        continue
-
-                    x0 = span["bbox"][0]
-                    y0 = span["bbox"][1]
-
-                    if y0 < Y_HEADER_MAX:
-                        continue
-
-                    if y0 > Y_FOOTER_MIN:
-                        continue
-
-                    col = detect_column(x0)
-
-                    if col == "ignore":
-                        continue
-
-                    size = span["size"]
-
-                    spans.append((
-                        page_no,
-                        round(y0, 1),
-                        round(x0, 1),
-                        col,
-                        size >= 14,
-                        text
-                    ))
-
-    spans.sort(key=lambda x: (x[0], x[1], x[2]))
-
-    return spans
-
-
-# =========================================================
-# GROUP LINES
-# =========================================================
-
-def group_lines(spans):
-
-    lines = []
-
-    cur = None
-
-    for page, y, x0, col, big, text in spans:
-
-        new_line = (
-            cur is None
-            or page != cur["page"]
-            or abs(y - cur["y"]) > 3
-        )
-
-        if new_line:
-
-            if cur:
-                lines.append(cur)
-
-            cur = {
-                "page": page,
-                "y": y,
-                "big": big
-            }
-
-        if big:
-            cur["big"] = True
-
-        if col in cur:
-            cur[col] += " " + text
-        else:
-            cur[col] = text
-
-    if cur:
-        lines.append(cur)
-
-    return lines
-
-
-# =========================================================
-# PARSE
-# =========================================================
-
-def parse_lines(lines):
-
-    records = []
-
-    subfilters = []
-
-    current_hoofdstuk = ""
-    current_prefix = ""
-
-    pending_hoofdstuk = ""
-
-    cur_code = None
-    cur_page = 0
-    cur_y = 0
-
-    cur_omschrijving = []
-    cur_extra = []
-    cur_kenmerk = []
-    cur_eenheid = []
-    cur_offerte = ""
-
-    def flush():
-
-        nonlocal cur_code
-        nonlocal cur_omschrijving
-        nonlocal cur_extra
-        nonlocal cur_kenmerk
-        nonlocal cur_eenheid
-        nonlocal cur_offerte
-
-        if cur_code is None:
-            return
-
-        records.append({
-
-            "hoofdstuk": current_hoofdstuk,
-
-            "subfilter": "",
-
-            "code": cur_code,
-
-            "omschrijving":
-                " ".join(cur_omschrijving).strip(),
-
-            "extra_info":
-                " ".join(cur_extra).strip(),
-
-            "kenmerk":
-                " / ".join(cur_kenmerk).strip(),
-
-            "eenheid":
-                " / ".join(cur_eenheid).strip(),
-
-            "offerte":
-                cur_offerte,
-
-            "_page": cur_page,
-            "_y": cur_y,
-            "_prefix": current_prefix,
-        })
-
-        cur_code = None
-
-        cur_omschrijving = []
-        cur_extra = []
-        cur_kenmerk = []
-        cur_eenheid = []
-
-        cur_offerte = ""
-
-    for line in lines:
-
-        sf_nr = line.get("sf_nr", "").strip()
-        sf_naam = line.get("sf_naam", "").strip()
-
-        code = line.get("code", "").strip()
-
-        omschrijving = line.get("omschrijving", "").strip()
-
-        extra_info = line.get("extra_info", "").strip()
-
-        kenmerk = line.get("kenmerk", "").strip()
-
-        eenheid = line.get("eenheid", "").strip()
-
-        offerte = line.get("offerte", "").strip()
-
-        big = line.get("big", False)
-
-        page = line["page"]
-        y = line["y"]
-
-        # =====================================================
-        # SKIP HEADERS
-        # =====================================================
-
-        if (
-            sf_nr.upper() in SKIP_VALUES
-            or sf_naam.upper() in SKIP_VALUES
-            or code.upper() in SKIP_VALUES
-        ):
+    all_records = []
+
+    # VLIF tabellen hebben vaak kolommen zoals: Code, Omschrijving, Selectie/Voorwaarden, Punten, etc.
+    # We zoeken flexibel naar regels die beginnen met een code (bijv. 3 of 4 cijfers, of letters/cijfers)
+    code_pattern = re.compile(
+        r"^\d{3,4}/?.*"
+    )  # Matches bijv. '1041', '2101/1', etc.
+
+    for page_num, page in enumerate(doc, start=1):
+        # Haal de tekst op als gestructureerde woorden met coördinaten
+        words = page.get_text("words")
+        if not words:
             continue
 
-        # =====================================================
-        # HOOFDSTUK
-        # =====================================================
+        # Groepeer woorden per regel op basis van hun Y-coördinaat (met een marge van 3 pixels)
+        lines_dict = {}
+        for w in words:
+            x0, y0, x1, y1, text, block_no, line_no, word_no = w
+            # Rond de Y-coördinaat af om kleine hoogteverschillen op te vangen
+            y_key = round(y0 / 3) * 3
+            if y_key not in lines_dict:
+                lines_dict[y_key] = []
+            lines_dict[y_key].append(w)
 
-        if big:
+        # Sorteer de regels van boven naar beneden
+        for y_key in sorted(lines_dict.keys()):
+            # Sorteer woorden binnen de regel van links naar rechts
+            sorted_words = sorted(lines_dict[y_key], key=lambda x: x[0])
 
-            # 2.1 + naam op zelfde lijn
+            # Combineer woorden tot kolommen op basis van hun X-afstand
+            line_text_elements = []
+            current_element = sorted_words[0][4]
+            last_x1 = sorted_words[0][2]
 
-            if (
-                sf_nr
-                and HOOFDSTUK_RE.match(sf_nr)
-                and sf_naam
-            ):
-
-                flush()
-
-                current_hoofdstuk = f"{sf_nr} {sf_naam}".strip()
-
-                current_prefix = sf_nr
-
-                pending_hoofdstuk = ""
-
-                continue
-
-            # enkel nummer
-
-            if (
-                sf_nr
-                and HOOFDSTUK_RE.match(sf_nr)
-                and not sf_naam
-            ):
-
-                flush()
-
-                pending_hoofdstuk = sf_nr
-
-                continue
-
-            # enkel naam
-
-            if sf_naam and not sf_nr:
-
-                flush()
-
-                if pending_hoofdstuk:
-
-                    current_hoofdstuk = (
-                        f"{pending_hoofdstuk} {sf_naam}"
-                    ).strip()
-
-                    current_prefix = pending_hoofdstuk
-
-                    pending_hoofdstuk = ""
-
+            for w in sorted_words[1:]:
+                x0, _, x1, _, text = w[0], w[1], w[2], w[3], w[4]
+                # Als de afstand tot het vorige woord groter is dan 15 pixels, zien we het als een nieuwe kolom
+                if x0 - last_x1 > 15:
+                    line_text_elements.append(current_element)
+                    current_element = text
                 else:
+                    # Anders hoort het bij hetzelfde tekstblok (bijv. een zin met spaties)
+                    current_element += " " + text
+                last_x1 = x1
+            line_text_elements.append(current_element)
+
+            # Filterlogica: Een geldige VLIF-regel begint meestal met een specifieke Code
+            if line_text_elements and code_pattern.match(line_text_elements[0]):
+                # Zorg dat we lege kolommen opvullen tot een vaste structuur (bijv. max 5 kolommen)
+                while len(line_text_elements) < 4:
+                    line_text_elements.append("")
+                all_records.append(line_text_elements[:5])
+
+    print(f"    records gevonden met nieuwe engine: {len(all_records)}")
+    return all_records
 
-                    current_hoofdstuk = sf_naam
-
-                    current_prefix = ""
-
-                continue
-
-        # =====================================================
-        # SUBFILTER
-        # =====================================================
-
-        if sf_nr and SUBFILTER_RE.match(sf_nr):
-
-            prefix = ".".join(sf_nr.split(".")[:2])
-
-            label = f"{sf_nr} {sf_naam}".strip()
-
-            subfilters.append((
-                page,
-                y,
-                prefix,
-                label
-            ))
-
-            continue
-
-        # =====================================================
-        # CODE
-        # =====================================================
-
-        if code and CODE_RE.match(code):
-
-            flush()
-
-            cur_code = code
-
-            cur_page = page
-            cur_y = y
-
-            cur_omschrijving = (
-                [omschrijving]
-                if omschrijving else []
-            )
-
-            cur_extra = (
-                [extra_info]
-                if extra_info else []
-            )
-
-            cur_kenmerk = (
-                [kenmerk]
-                if kenmerk else []
-            )
-
-            cur_eenheid = (
-                [eenheid]
-                if eenheid else []
-            )
-
-            cur_offerte = offerte
-
-            continue
-
-        # =====================================================
-        # CONTINUATION
-        # =====================================================
-
-        if cur_code is not None:
-
-            if omschrijving:
-                cur_omschrijving.append(omschrijving)
-
-            if extra_info:
-                cur_extra.append(extra_info)
-
-            if kenmerk:
-                cur_kenmerk.append(kenmerk)
-
-            if eenheid:
-                cur_eenheid.append(eenheid)
-
-            if offerte and not cur_offerte:
-                cur_offerte = offerte
-
-    flush()
-
-    return records, subfilters
-
-
-# =========================================================
-# ASSIGN SUBFILTERS
-# =========================================================
-
-def assign_subfilters(records, subfilters):
-
-    for rec in records:
-
-        page = rec["_page"]
-        y = rec["_y"]
-
-        prefix = rec["_prefix"]
-
-        best = ""
-
-        for sf_page, sf_y, sf_prefix, sf_label in subfilters:
-
-            if sf_prefix != prefix:
-                continue
-
-            if (sf_page, sf_y) >= (page, y):
-
-                best = sf_label
-
-                break
-
-        rec["subfilter"] = best
-
-        del rec["_page"]
-        del rec["_y"]
-        del rec["_prefix"]
-
-    return records
-
-
-# =========================================================
-# SAVE EXCEL
-# =========================================================
-
-def save_excel(records, output_path):
-
-    df = pd.DataFrame(records)
-
-    df = df[df["code"] != ""]
-
-    df = df.reset_index(drop=True)
-
-    with pd.ExcelWriter(
-        output_path,
-        engine="openpyxl"
-    ) as writer:
-
-        df.to_excel(
-            writer,
-            index=False,
-            sheet_name="Ruwe_data"
-        )
-
-        ws = writer.sheets["Ruwe_data"]
-
-        widths = [
-            34,
-            40,
-            8,
-            50,
-            60,
-            30,
-            14,
-            10,
-        ]
-
-        for i, width in enumerate(widths, start=1):
-
-            ws.column_dimensions[
-                get_column_letter(i)
-            ].width = width
-
-        ws.freeze_panes = "A2"
-
-    print(f"✅ Saved: {output_path}")
-
-
-# =========================================================
-# MAIN PARSER
-# =========================================================
-
-def parse_pdf(pdf_path):
-
-    pdf_path = Path(pdf_path)
-
-    print(f"📄 {pdf_path.name}")
-
-    spans = extract_spans(pdf_path)
-
-    print(f"   spans: {len(spans):,}")
-
-    lines = group_lines(spans)
-
-    print(f"   lines: {len(lines):,}")
-
-    records, subfilters = parse_lines(lines)
-
-    print(f"   records: {len(records):,}")
-
-    print(f"   subfilters: {len(subfilters):,}")
-
-    records = assign_subfilters(records, subfilters)
-
-    return records
-
-
-# =========================================================
-# MAIN
-# =========================================================
 
 def main():
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--input-pdf",
-        required=True
+    parser = argparse.ArgumentParser(
+        description="Flexibele PDF naar RAW XLSX VLIF Converter"
     )
-
+    parser.add_argument("--input-pdf", required=True, help="Pad naar de input PDF")
     parser.add_argument(
-        "--output-xlsx",
-        required=True
+        "--output-xlsx", required=True, help="Pad naar de output RAW XLSX"
     )
-
     args = parser.parse_args()
 
-    records = parse_pdf(args.input_pdf)
+    records = extract_vlif_table(args.input_pdf)
 
     if not records:
+        print("⚠️ Geen records gevonden. We maken een lege nood-tabel aan.")
+        # Maak een dummy record aan zodat de workflow in ieder geval niet crasht en je kunt debuggen
+        df = pd.DataFrame(
+            [["GEEN_DATA", "Tabelstructuur niet herkend", "", ""]],
+            columns=["Code", "Omschrijving", "Info_1", "Info_2"],
+        )
+    else:
+        # Dynamische kolommen toewijzen op basis van het aantal gevonden elementen
+        col_names = [f"Kolom_{i+1}" for i in range(len(records[0]))]
+        # Geef de eerste twee kolommen logische namen die vaak bij VLIF horen
+        col_names[0] = "Code"
+        if len(col_names) > 1:
+            col_names[1] = "Omschrijving"
 
-        print("⚠️ Geen records gevonden")
+        df = pd.DataFrame(records, columns=col_names)
 
-        return
+    # Zorg dat de output map bestaat
+    os.makedirs(os.path.dirname(args.output_xlsx), exist_ok=True)
 
-    save_excel(
-        records,
-        args.output_xlsx
-    )
-
-    print("🎉 Klaar")
+    # Sla op naar Excel
+    df.to_excel(args.output_xlsx, index=False)
+    print(f"✅ Bestand succesvol opgeslagen: {args.output_xlsx}")
 
 
 if __name__ == "__main__":
