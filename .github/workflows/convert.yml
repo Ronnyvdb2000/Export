@@ -1,19 +1,71 @@
-      - name: Commit output to export-output branch
+name: Convert PDF to Excel (PyMuPDF engine)
+
+on:
+  push:
+    paths:
+      - 'input/**/*.pdf'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pymupdf pandas openpyxl
+
+      - name: Create output directory
+        run: mkdir -p output
+
+      - name: Show input files
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          echo "📂 INPUT:"
+          ls -lah input/
 
-          git checkout -B export-output
+      - name: Stap 1 - PDF naar ruwe Excel (layout_engine)
+        run: |
+          for f in input/*.pdf; do
+            echo "Verwerken: $f"
+            base=$(basename "${f%.pdf}")
+            python src/layout_engine.py \
+              --input-pdf "$f" \
+              --output-xlsx "output/${base}_raw.xlsx"
+          done
 
-          mkdir -p output
-          touch output/.gitkeep
+      - name: Stap 2 - Ruwe Excel naar tabblad-werkboek (build_excel)
+        run: |
+          for f in output/*_raw.xlsx; do
+            base=$(basename "${f%_raw.xlsx}")
+            echo "Opbouwen tabbladen: $base"
+            python src/build_excel.py \
+              --input "$f" \
+              --output "output/${base}.xlsx"
+          done
 
-          # FIX: kopieer output naar root, niet naar zichzelf
-          cp -r output/* .
+      - name: Ruwe bestanden opruimen
+        run: rm -f output/*_raw.xlsx
 
-          git add *.xlsx || true
-          git add *.db || true
-          git add output/ || true
+      - name: Show output files
+        run: |
+          echo "📂 OUTPUT:"
+          ls -lah output/
 
-          git commit -m "Automatische export $(date)" || echo "Geen wijzigingen"
-          git push origin export-output --force
+      - name: Upload Excel artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: converted-excel-files
+          path: output/*.xlsx
+          if-no-files-found: error
