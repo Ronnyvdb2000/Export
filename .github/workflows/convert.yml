@@ -1,20 +1,88 @@
-for f in "${FILES[@]}"; do
-  echo ""
-  echo "================================================="
-  echo "📄 VERWERKEN: $f"
-  echo "================================================="
+name: Convert PDF to Excel
 
-  base=$(basename "${f%.pdf}")
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
-  # HIER AANGEPAST: --input-pdf -> --input en --output-xlsx -> --output
-  python src/layout_engine.py \
-    --input "$f" \
-    --output "output/${base}_raw.xlsx"
+permissions:
+  contents: write
 
-  if [ ! -f "output/${base}_raw.xlsx" ]; then
-    echo "❌ RAW XLSX niet aangemaakt"
-    exit 1
-  fi
+jobs:
+  convert:
+    runs-on: ubuntu-latest
 
-  echo "✅ RAW XLSX OK"
-done
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pymupdf pandas openpyxl
+
+      - name: Create output directory
+        run: mkdir -p output
+
+      - name: Show detected input files
+        run: |
+          echo "===== BESCHIKBARE INPUT BESTANDEN ====="
+          find input -type f
+
+      - name: Process PDF files with Layout Engine
+        run: |
+          shopt -s nullglob
+          FILES=(input/*.pdf)
+          
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "❌ Geen PDF bestanden gevonden in de map 'input/'"
+            exit 1
+          fi
+          
+          for f in "${FILES[@]}"; do
+            echo ""
+            echo "================================================="
+            echo "📄 VERWERKEN: $f"
+            echo "================================================="
+            
+            base=$(basename "${f%.pdf}")
+            
+            # Hier gebruiken we de correcte argumenten die layout_engine.py verwacht
+            python src/layout_engine.py \
+              --input "$f" \
+              --output "output/${base}_raw.xlsx"
+            
+            if [ ! -f "output/${base}_raw.xlsx" ]; then
+              echo "❌ RAW XLSX is niet aangemaakt voor $f"
+              exit 1
+            fi
+            
+            echo "✅ RAW XLSX succesvol aangemaakt"
+          done
+
+      - name: Process raw files with Excel Builder
+        run: |
+          shopt -s nullglob
+          RAW_FILES=(output/*_raw.xlsx)
+          
+          for rf in "${RAW_FILES[@]}"; do
+            base=$(basename "$rf" _raw.xlsx)
+            echo "📊 Excel Builder uitvoeren voor: $base"
+            
+            python src/build_excel.py \
+              --input "$rf" \
+              --output "output/${base}_definitief.xlsx"
+          done
+
+      - name: Upload generated Excel files as Artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: vlif-excel-export
+          path: output/*_definitief.xlsx
