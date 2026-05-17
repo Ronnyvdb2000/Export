@@ -1,193 +1,20 @@
-name: Convert PDF to Excel
+for f in "${FILES[@]}"; do
+  echo ""
+  echo "================================================="
+  echo "📄 VERWERKEN: $f"
+  echo "================================================="
 
-on:
-  push:
-    paths:
-      - 'input/**/*.pdf'
+  base=$(basename "${f%.pdf}")
 
-  workflow_dispatch:
+  # HIER AANGEPAST: --input-pdf -> --input en --output-xlsx -> --output
+  python src/layout_engine.py \
+    --input "$f" \
+    --output "output/${base}_raw.xlsx"
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  if [ ! -f "output/${base}_raw.xlsx" ]; then
+    echo "❌ RAW XLSX niet aangemaakt"
+    exit 1
+  fi
 
-jobs:
-
-  convert:
-
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
-
-    steps:
-
-      # =====================================================
-      # CHECKOUT
-      # =====================================================
-
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      # =====================================================
-      # PYTHON
-      # =====================================================
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-
-      # =====================================================
-      # DEPENDENCIES
-      # =====================================================
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pymupdf pandas openpyxl
-
-      # =====================================================
-      # OUTPUT MAP
-      # =====================================================
-
-      - name: Create output directory
-        run: |
-          mkdir -p output
-
-      # =====================================================
-      # DEBUG INPUT
-      # =====================================================
-
-      - name: Show input files
-        run: |
-          echo "===== INPUT ====="
-          find input -type f
-
-      # =====================================================
-      # PDF -> RAW XLSX
-      # =====================================================
-
-      - name: Convert PDF to raw Excel
-        run: |
-
-          shopt -s nullglob
-
-          FILES=(input/*.pdf)
-
-          if [ ${#FILES[@]} -eq 0 ]; then
-            echo "❌ Geen PDF bestanden gevonden"
-            exit 1
-          fi
-
-          for f in "${FILES[@]}"; do
-
-            echo ""
-            echo "================================================="
-            echo "📄 VERWERKEN: $f"
-            echo "================================================="
-
-            base=$(basename "${f%.pdf}")
-
-            python src/layout_engine.py \
-              --input-pdf "$f" \
-              --output-xlsx "output/${base}_raw.xlsx"
-
-            if [ ! -f "output/${base}_raw.xlsx" ]; then
-              echo "❌ RAW XLSX niet aangemaakt"
-              exit 1
-            fi
-
-            echo "✅ RAW XLSX OK"
-
-          done
-
-      # =====================================================
-      # RAW XLSX -> FINALE XLSX
-      # =====================================================
-
-      - name: Build final Excel
-        run: |
-
-          shopt -s nullglob
-
-          FILES=(output/*_raw.xlsx)
-
-          if [ ${#FILES[@]} -eq 0 ]; then
-            echo "❌ Geen RAW XLSX bestanden gevonden"
-            exit 1
-          fi
-
-          for f in "${FILES[@]}"; do
-
-            echo ""
-            echo "================================================="
-            echo "📊 OPBOUWEN: $f"
-            echo "================================================="
-
-            base=$(basename "${f%_raw.xlsx}")
-
-            python src/build_excel.py \
-              --input "$f" \
-              --output "output/${base}.xlsx"
-
-            if [ ! -f "output/${base}.xlsx" ]; then
-              echo "❌ Finale XLSX niet aangemaakt"
-              exit 1
-            fi
-
-            echo "✅ Finale XLSX OK"
-
-          done
-
-      # =====================================================
-      # RAW BESTANDEN VERWIJDEREN
-      # =====================================================
-
-      - name: Cleanup raw files
-        run: |
-          rm -f output/*_raw.xlsx
-
-      # =====================================================
-      # DEBUG OUTPUT
-      # =====================================================
-
-      - name: Show output files
-        run: |
-          echo "===== OUTPUT ====="
-          find output -type f -maxdepth 1
-
-      # =====================================================
-      # COMMIT OUTPUT
-      # =====================================================
-
-      - name: Commit output to export-output branch
-        run: |
-
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-          git checkout -B export-output
-
-          mkdir -p output
-
-          touch output/.gitkeep
-
-          git add output/
-
-          git commit -m "Automatische export $(date)" || echo "Geen wijzigingen"
-
-          git push origin export-output --force
-
-      # =====================================================
-      # ARTIFACTS
-      # =====================================================
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
-        with:
-          name: converted-files
-          path: |
-            output/*.xlsx
-          if-no-files-found: error
+  echo "✅ RAW XLSX OK"
+done
