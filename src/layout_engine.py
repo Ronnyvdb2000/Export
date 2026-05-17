@@ -24,14 +24,16 @@ from openpyxl.utils import get_column_letter
 # Kolomgrenzen (x-posities uit PDF)
 # ------------------------------------------------------------
 
-X_SF_NR   = (35, 70)
-X_SF_NM   = (70, 210)
-X_CODE    = (190, 220)
-X_OMSCHR  = (220, 375)
-X_EXTRA   = (375, 600)
-X_KENMERK = (600, 700)
-X_EENHEID = (700, 770)
-X_OFFERTE = (770, 850)
+X_SF_NR   = (20, 80)
+X_SF_NAAM = (80, 220)
+
+X_CODE    = (220, 260)
+
+X_OMSCHR  = (260, 430)
+X_EXTRA   = (430, 610)
+X_KENMERK = (610, 710)
+X_EENHEID = (710, 790)
+X_OFFERTE = (790, 860)
 
 Y_HEADER_MAX = 55
 Y_FOOTER_MIN = 540
@@ -40,7 +42,7 @@ Y_FOOTER_MIN = 540
 # Regex
 # ------------------------------------------------------------
 
-CODE_RE = re.compile(r"^(15|30|40)$")
+CODE_RE = re.compile(r"^\d+$")
 
 SUBFILTER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
