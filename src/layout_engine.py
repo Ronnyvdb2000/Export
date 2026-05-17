@@ -1,218 +1,317 @@
 """
-layout_engine.py
-VLIF4 PDF -> ruwe Excel
+layout_engine.py – VLIF4 PDF naar ruwe Excel
+
+Structuur van de PDF (3 blokken met eigen kolomindeling):
+
+BLOK 2 (Productief, pg 9–146) en BLOK 3 (AERi, pg 147–174):
+  sf_nr    x ≈ 39.5   zone 35–62
+  sf_naam  x ≈ 68–85  zone 62–197
+  code     x ≈ 199–201 zone 197–213  waarden: 15/30/40/50
+  omschr   x ≈ 223–224 zone 213–373
+  extra    x ≈ 373–375 zone 373–599
+  kenmerk  x ≈ 599–601 zone 599–699
+  eenheid  x ≈ 699–701 zone 699–775
+  offerte  x ≈ 771–773 zone 775+
+
+BLOK 4 (NPI, pg 175–194):
+  sf_nr    x ≈ 39.5   zone 35–62
+  sf_naam  x ≈ 68–76  zone 62–227
+  code+omschr samen x ≈ 229 zone 227–256  → "100 Huiszwaluwtil" → splitsen
+  omschr vervolg   x ≈ 254 zone 256–397
+  extra    x ≈ 397   zone 397–624
+  kenmerk  x ≈ 624   zone 624–723
+  eenheid  x ≈ 723   zone 723–784
+  offerte  x ≈ 784   zone 784+
+
+Subfilter = nr + naam samengevoegd ("2.1.1 Bewaren en koelen").
+Code staat altijd BOVEN zijn subfilter-label → toewijzing via eerste opvolgende subfilter.
 """
 
 import re
 import argparse
+import collections
 from pathlib import Path
 
 import fitz
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
+Y_HEADER_MAX = 60
+Y_FOOTER_MIN = 520
 
-# =========================================================
-# X-RANGES
-# =========================================================
+CODE_RE           = re.compile(r"^(15|30|40|50|100)$")
+CODE_COMBINED_RE  = re.compile(r"^(15|30|40|50|100)\s+(.+)$")  # NPI: "100 Omschrijving"
+SUBFILTER_NR_RE   = re.compile(r"^\d+\.\d+\.\d+$")
+HOOFD_NR_RE       = re.compile(r"^\d+\.?\d*$")
 
-X_SF_NR = (20, 80)
-X_SF_NAAM = (80, 220)
-
-X_CODE = (220, 260)
-
-X_OMSCHR = (260, 430)
-X_EXTRA = (430, 610)
-X_KENMERK = (610, 710)
-X_EENHEID = (710, 790)
-X_OFFERTE = (790, 860)
-
-Y_HEADER_MAX = 55
-Y_FOOTER_MIN = 520   # ⭐ FIX: 540 → 520
+SKIP = {"SUBFILTER", "OMSCHRIJVING", "EXTRA_INFO", "KENMERK",
+        "EENHEID", "OFFERTE", "%"}
 
 
-# =========================================================
-# REGEX
-# =========================================================
-
-CODE_RE = re.compile(r"^\d+$")
-SUBFILTER_RE = re.compile(r"^\d+\.\d+\.\d+$")
-HOOFDSTUK_RE = re.compile(r"^\d+\.\d+$")
-
-SKIP_VALUES = {
-    "",
-    "SUBFILTER",
-    "OMSCHRIJVING",
-    "EXTRA_INFO",
-    "KENMERK",
-    "EENHEID",
-    "OFFERTE",
-    "%",
-}
-
-
-# =========================================================
-# KOLOM DETECTIE
-# =========================================================
-
-def detect_column(x0):
-
-    if X_SF_NR[0] <= x0 < X_SF_NR[1]:
-        return "sf_nr"
-
-    if X_SF_NAAM[0] <= x0 < X_SF_NAAM[1]:
-        return "sf_naam"
-
-    if X_CODE[0] <= x0 < X_CODE[1]:
-        return "code"
-
-    if X_OMSCHR[0] <= x0 < X_EXTRA[0]:
-        return "omschrijving"
-
-    if X_EXTRA[0] <= x0 < X_KENMERK[0]:
-        return "extra_info"
-
-    if X_KENMERK[0] <= x0 < X_EENHEID[0]:
-        return "kenmerk"
-
-    if X_EENHEID[0] <= x0 < X_OFFERTE[0]:
-        return "eenheid"
-
-    if X_OFFERTE[0] <= x0:
-        return "offerte"
-
+def _col(x0, npi=False):
+    if  35 <= x0 <  62: return "sf_nr"
+    if  62 <= x0 < 197: return "sf_naam"
+    if npi:
+        if 197 <= x0 < 227: return "sf_naam"   # lege zone NPI, valt bij naam
+        if 227 <= x0 < 256: return "code"       # "100 Huiszwaluwtil" gecombineerd
+        if 256 <= x0 < 397: return "omschrijving"
+        if 397 <= x0 < 624: return "extra_info"
+        if 624 <= x0 < 723: return "kenmerk"
+        if 723 <= x0 < 784: return "eenheid"
+        if 784 <= x0:        return "offerte"
+    else:
+        if 197 <= x0 < 213: return "code"
+        if 213 <= x0 < 373: return "omschrijving"
+        if 373 <= x0 < 599: return "extra_info"
+        if 599 <= x0 < 699: return "kenmerk"
+        if 699 <= x0 < 775: return "eenheid"
+        if 775 <= x0:        return "offerte"
     return "ignore"
 
 
-# =========================================================
-# PDF EXTRACT
-# =========================================================
-
-def extract_spans(pdf_path):
-
+def _extract(pdf_path):
     doc = fitz.open(pdf_path)
     spans = []
+    npi_mode = False
 
     for page_no, page in enumerate(doc, start=1):
+        if page_no >= 175:
+            npi_mode = True
 
-        blocks = page.get_text(
-            "dict",
-            flags=fitz.TEXT_PRESERVE_WHITESPACE
-        )["blocks"]
-
-        for block in blocks:
-
+        for block in page.get_text("dict",
+                flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]:
             if block.get("type") != 0:
                 continue
-
             for line in block["lines"]:
-
                 for span in line["spans"]:
-
                     text = " ".join(span["text"].split())
                     if not text:
                         continue
-
-                    x0 = span["bbox"][0]
-                    y0 = span["bbox"][1]
-
-                    if y0 < Y_HEADER_MAX:
-                        continue
-
-                    if y0 > Y_FOOTER_MIN:
-                        continue
-
-                    col = detect_column(x0)
-                    if col == "ignore":
-                        continue
-
+                    x0   = span["bbox"][0]
+                    y0   = span["bbox"][1]
                     size = span["size"]
+                    if y0 < Y_HEADER_MAX or y0 > Y_FOOTER_MIN:
+                        continue
+                    c = _col(x0, npi_mode)
+                    if c == "ignore":
+                        continue
+                    spans.append((page_no, round(y0, 1), round(x0, 1),
+                                  c, size >= 14, text))
 
-                    spans.append((
-                        page_no,
-                        round(y0, 1),
-                        round(x0, 1),
-                        col,
-                        size >= 14,
-                        text
-                    ))
-
-    spans.sort(key=lambda x: (x[0], x[1], x[2]))
+    spans.sort(key=lambda s: (s[0], s[1], s[2]))
     return spans
 
 
-# =========================================================
-# GROUP LINES
-# =========================================================
-
-def group_lines(spans):
-
+def _group(spans):
     lines = []
     cur = None
-
     for page, y, x0, col, big, text in spans:
-
-        new_line = (
-            cur is None
-            or page != cur["page"]
-            or abs(y - cur["y"]) > 3
-        )
-
-        if new_line:
+        new = (cur is None or page != cur["page"] or abs(y - cur["y"]) > 3)
+        if new:
             if cur:
                 lines.append(cur)
-
-            cur = {
-                "page": page,
-                "y": y,
-                "big": big
-            }
-
+            cur = {"page": page, "y": y, "big": big}
         if big:
             cur["big"] = True
-
-        if col in cur:
-            cur[col] += " " + text
-        else:
-            cur[col] = text
-
+        cur[col] = (cur[col] + " " + text) if col in cur else text
     if cur:
         lines.append(cur)
-
     return lines
 
 
-# =========================================================
-# PARSE
-# =========================================================
-
-def parse_lines(lines):
-
-    records = []
+def _parse(lines):
+    records    = []
     subfilters = []
 
-    current_hoofdstuk = ""
-    current_prefix = ""
-    pending_hoofdstuk = ""
-
-    cur_code = None
-    cur_page = 0
-    cur_y = 0
-
-    cur_omschrijving = []
-    cur_extra = []
+    cur_hoofdstuk    = ""
+    cur_hoofd_prefix = ""
+    pending_nr       = ""
+    cur_code    = None
+    cur_omschr  = []
+    cur_extra   = []
     cur_kenmerk = []
     cur_eenheid = []
     cur_offerte = ""
+    cur_page    = 0
+    cur_y       = 0.0
 
     def flush():
-
-        nonlocal cur_code, cur_omschrijving, cur_extra, cur_kenmerk, cur_eenheid, cur_offerte
-
-        if cur_code is None:
+        nonlocal cur_code, cur_omschr, cur_extra
+        nonlocal cur_kenmerk, cur_eenheid, cur_offerte
+        if cur_code is None and not cur_omschr:
             return
-
         records.append({
-            "hoofdstuk": current_hoofdstuk,
-            "subfilter": "",
-            "code": cur_code,
+            "hoofdstuk"   : cur_hoofdstuk,
+            "hoofd_prefix": cur_hoofd_prefix,
+            "subfilter"   : "",
+            "code"        : cur_code or "",
+            "omschrijving": " ".join(cur_omschr).strip(),
+            "extra_info"  : " ".join(cur_extra).strip(),
+            "kenmerk"     : " / ".join(cur_kenmerk) if cur_kenmerk else "",
+            "eenheid"     : " / ".join(cur_eenheid) if cur_eenheid else "",
+            "offerte"     : cur_offerte,
+            "_page"       : cur_page,
+            "_y"          : cur_y,
+        })
+        cur_code    = None
+        cur_omschr  = []
+        cur_extra   = []
+        cur_kenmerk = []
+        cur_eenheid = []
+        cur_offerte = ""
+
+    for line in lines:
+        sf_nr  = line.get("sf_nr",        "").strip()
+        sf_nm  = line.get("sf_naam",      "").strip()
+        code   = line.get("code",         "").strip()
+        omschr = line.get("omschrijving", "").strip()
+        extra  = line.get("extra_info",   "").strip()
+        kenmrk = line.get("kenmerk",      "").strip()
+        eenhd  = line.get("eenheid",      "").strip()
+        offrte = line.get("offerte",      "").strip()
+        big    = line.get("big",          False)
+        page   = line["page"]
+        y      = line["y"]
+
+        # Sla kolomkoppen over
+        if sf_nr.upper() in SKIP or sf_nm.upper() in SKIP or code in SKIP:
+            continue
+        if kenmrk == "(leeg)": kenmrk = ""
+        if eenhd  == "(leeg)": eenhd  = ""
+
+        # NPI: "100 Huiszwaluwtil" staat in code-veld → splitsen
+        combined = CODE_COMBINED_RE.match(code)
+        if combined and not omschr:
+            omschr = combined.group(2)
+            code   = combined.group(1)
+        elif combined and omschr:
+            omschr = combined.group(2) + " " + omschr
+            code   = combined.group(1)
+
+        # ── Grote kop (font ≥ 14) ────────────────────────────────────────
+        if big:
+            # Tekst die in sf_nr-zone valt maar geen nummer is → is een naam
+            if sf_nr and not HOOFD_NR_RE.match(sf_nr) and not SUBFILTER_NR_RE.match(sf_nr):
+                sf_nm = (sf_nr + " " + sf_nm).strip()
+                sf_nr = ""
+
+            if sf_nr and HOOFD_NR_RE.match(sf_nr) and sf_nm:
+                flush()
+                cur_hoofdstuk    = f"{sf_nr} {sf_nm}".strip()
+                cur_hoofd_prefix = sf_nr
+                pending_nr       = ""
+            elif sf_nr and HOOFD_NR_RE.match(sf_nr):
+                flush()
+                pending_nr = sf_nr
+            elif sf_nm:
+                flush()
+                if pending_nr:
+                    cur_hoofdstuk    = f"{pending_nr} {sf_nm}".strip()
+                    cur_hoofd_prefix = pending_nr
+                    pending_nr       = ""
+                else:
+                    # Meerdere regels (bv. "ROERENDE AEA..." + "BESTAANDE STALLEN")
+                    cur_hoofdstuk = (cur_hoofdstuk + " " + sf_nm).strip()
+            continue
+
+        # ── Subfilter-label ───────────────────────────────────────────────
+        if sf_nr and SUBFILTER_NR_RE.match(sf_nr):
+            sf_hoofd = ".".join(sf_nr.split(".")[:2])
+            sf_str   = f"{sf_nr} {sf_nm}".strip()
+            subfilters.append((page, y, sf_str, sf_hoofd))
+            continue
+
+        # ── Code ─────────────────────────────────────────────────────────
+        if code and CODE_RE.match(code):
+            flush()
+            cur_code    = code
+            cur_page    = page
+            cur_y       = y
+            cur_omschr  = [omschr] if omschr else []
+            cur_extra   = [extra]  if extra  else []
+            cur_kenmerk = [kenmrk] if kenmrk else []
+            cur_eenheid = [eenhd]  if eenhd  else []
+            cur_offerte = offrte
+            continue
+
+        # ── Vervolgregel ─────────────────────────────────────────────────
+        if cur_code is not None:
+            if omschr:  cur_omschr.append(omschr)
+            if extra:   cur_extra.append(extra)
+            if kenmrk:  cur_kenmerk.append(kenmrk)
+            if eenhd:   cur_eenheid.append(eenhd)
+            if offrte and not cur_offerte:
+                cur_offerte = offrte
+
+    flush()
+    return records, subfilters
+
+
+def _assign(records, subfilters):
+    """Wijs aan elke record het eerste subfilter toe dat NA zijn positie komt."""
+    sf_sorted = sorted(subfilters, key=lambda s: (s[0], s[1]))
+    for rec in records:
+        rp  = rec["_page"]
+        ry  = rec["_y"]
+        pfx = rec["hoofd_prefix"]
+        if pfx:
+            for sp, sy, sf_str, shoofd in sf_sorted:
+                if shoofd != pfx:
+                    continue
+                if (sp, sy) >= (rp, ry):
+                    rec["subfilter"] = sf_str
+                    break
+        del rec["_page"]
+        del rec["_y"]
+        del rec["hoofd_prefix"]
+    return records
+
+
+def _save(records, output_path):
+    df = pd.DataFrame(records, columns=[
+        "hoofdstuk", "subfilter", "code",
+        "omschrijving", "extra_info", "kenmerk", "eenheid", "offerte"
+    ])
+    df = df[df["code"] != ""].reset_index(drop=True)
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Ruwe_data")
+        ws = writer.sheets["Ruwe_data"]
+        for i, w in enumerate([30, 30, 6, 42, 55, 30, 12, 9], start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        ws.freeze_panes = "A2"
+    print(f"✅ {output_path}  ({len(df)} rijen)")
+
+
+def parse_pdf(pdf_path):
+    pdf_path = Path(pdf_path)
+    print(f"📄 {pdf_path.name}")
+    spans = _extract(pdf_path)
+    print(f"   {len(spans):,} spans")
+    lines = _group(spans)
+    print(f"   {len(lines):,} regels")
+    records, subfilters = _parse(lines)
+    print(f"   {len(subfilters)} subfilters, {len(records)} records")
+    records = _assign(records, subfilters)
+    cnt = collections.Counter(r["hoofdstuk"] for r in records)
+    for h, c in sorted(cnt.items()):
+        sf_cnt = len(set(r["subfilter"] for r in records
+                         if r["hoofdstuk"] == h and r["subfilter"]))
+        print(f"   {h:55s}  {c:3d} rijen  {sf_cnt} subfilters")
+    return records
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-pdf",   required=True)
+    parser.add_argument("--output-xlsx", required=True)
+    args = parser.parse_args()
+    records = parse_pdf(Path(args.input_pdf))
+    if not records:
+        print("⚠️  Geen records")
+        return
+    _save(records, Path(args.output_xlsx))
+    print("🎉 Klaar")
+
+
+if __name__ == "__main__":
+    main()
