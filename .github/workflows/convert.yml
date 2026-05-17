@@ -74,7 +74,6 @@ jobs:
 
           # Output-map in repo zetten
           mkdir -p output
-          cp -r output/* output/
 
           # Lege map committen indien nodig
           touch output/.gitkeep
