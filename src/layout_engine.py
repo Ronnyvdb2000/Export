@@ -1,28 +1,20 @@
 """
 layout_engine.py – VLIF4 PDF naar ruwe Excel
 
-Exacte kolomgrenzen (gemeten):
-  sf_nr    x=39.5     zone 35–62
-  sf_naam  x=75.5     zone 62–197
-  code     x=200.5    zone 197–213
-  omschr   x=223.8    zone 213–370
-  extra    x=372.6    zone 370–597
-  kenmerk  x=599.5    zone 597–697
-  eenheid  x=698.7    zone 697–770
-  offerte  x=771+     zone 770+
+Vastgesteld patroon (pagina 9+10):
+  y=339.6  code=30  omschr="Ijsbatterij"   extra="Een ijsbatterij..."  kenmerk kWh
+  y=349.9  SUBFILTER 2.1.1 Bewaren en koelen   ← 10pt onder code, ONDERBREEKT NIET
+  y=351.6  extra vervolg "hernieuwbare energie..."
+  y=443.1  code=30  omschr="Selectiepoort met"
+  y=453.4  SUBFILTER 2.1.2 Gestuurd koeverkeer
+  y=456.6  omschr vervolg "koeherkenning"   ← hoort bij Selectiepoort
+  y=476.0  code=30  omschr="Opdrijfhek..."
 
-NPI (pg 175+):
-  code+omschr samen  x=229  zone 225–256  → splitsen op CODE_COMBINED_RE
-  omschr vervolg     x=254  zone 256–396
-  extra              x=397  zone 396–624
-  kenmerk            x=624  zone 624–723
-  eenheid            x=723  zone 723–784
-  offerte            x=784  zone 784+
-
-Subfilter-toewijzing:
-  De subfilter-label staat ALTIJD een paar pt ONDER de eerste code.
-  Per record: neem het EERSTE subfilter dat VOLGT op zijn (pagina,y)-positie.
-  Subfilter = "nr naam" in één veld, komt in kolom A van elke rij.
+Regels:
+  1. Subfilter-label onderbreekt de lopende record NIET
+  2. Vervolgtekst na subfilter hoort nog bij de vorige code
+  3. Nieuwe record begint pas bij een NIEUWE code-regel
+  4. Subfilter wordt toegewezen aan het EERSTVOLGENDE code-record
 """
 
 import re
@@ -98,11 +90,7 @@ def _extract(pdf_path):
 
 
 def _group(spans):
-    """
-    Groepeert spans op (page, y±4) tot regeldict.
-    Spans in dezelfde kolom op dezelfde regel worden samengevoegd.
-    Spans in VERSCHILLENDE kolommen worden NIET gemengd.
-    """
+    """Groepeert spans op (page, y±4) tot regeldict."""
     lines = []
     cur = None
     for page, y, x0, col, big, text in spans:
@@ -113,7 +101,6 @@ def _group(spans):
             cur = {"page": page, "y": y, "big": big}
         if big:
             cur["big"] = True
-        # Zelfde kolom: samenvoegen met spatie
         cur[col] = (cur[col] + " " + text) if col in cur else text
     if cur:
         lines.append(cur)
@@ -122,19 +109,21 @@ def _group(spans):
 
 def _parse(lines):
     records    = []
-    subfilters = []
+    subfilters = []  # (page, y, sf_str, hoofd_prefix)
 
-    cur_hoofd    = ""
-    cur_prefix   = ""
-    pending_nr   = ""
-    cur_code     = None
-    cur_omschr   = []
-    cur_extra    = []
-    cur_kenmerk  = []
-    cur_eenheid  = []
-    cur_offerte  = ""
-    cur_page     = 0
-    cur_y        = 0.0
+    cur_hoofd   = ""
+    cur_prefix  = ""
+    pending_nr  = ""
+
+    # Huidige open record
+    cur_code    = None
+    cur_omschr  = []
+    cur_extra   = []
+    cur_kenmerk = []
+    cur_eenheid = []
+    cur_offerte = ""
+    cur_page    = 0
+    cur_y       = 0.0
 
     def flush():
         nonlocal cur_code, cur_omschr, cur_extra
@@ -173,6 +162,7 @@ def _parse(lines):
         page   = line["page"]
         y      = line["y"]
 
+        # Kolomkoppen overslaan
         if sf_nr.upper() in SKIP or sf_nm.upper() in SKIP or code in SKIP:
             continue
         if kenmrk == "(leeg)": kenmrk = ""
@@ -181,15 +171,16 @@ def _parse(lines):
         # NPI: "100 Naam" in code-veld → splitsen
         cm = CODE_COMBINED_RE.match(code)
         if cm:
-            extra_omschr = cm.group(2)
-            code = cm.group(1)
-            omschr = (extra_omschr + " " + omschr).strip() if omschr else extra_omschr
+            omschr = (cm.group(2) + " " + omschr).strip()
+            code   = cm.group(1)
 
-        # ── Grote kop ────────────────────────────────────────────────────
+        # ── Grote kop (font ≥ 14) ────────────────────────────────────────
         if big:
+            # Tekst in sf_nr-zone die geen nummer is → behandel als naam
             if sf_nr and not HOOFD_NR_RE.match(sf_nr) and not SF_NR_RE.match(sf_nr):
                 sf_nm = (sf_nr + " " + sf_nm).strip()
                 sf_nr = ""
+
             if sf_nr and HOOFD_NR_RE.match(sf_nr) and sf_nm:
                 flush()
                 cur_hoofd  = f"{sf_nr} {sf_nm}".strip()
@@ -209,12 +200,22 @@ def _parse(lines):
             continue
 
         # ── Subfilter-label ───────────────────────────────────────────────
+        # De subfilter staat altijd ~10pt onder de code.
+        # De vervolgtekst van de omschrijving kan op dezelfde y staan
+        # als de subfilter (binnen 4pt groepering) → ook verwerken.
         if sf_nr and SF_NR_RE.match(sf_nr):
             sf_h = ".".join(sf_nr.split(".")[:2])
             subfilters.append((page, y, f"{sf_nr} {sf_nm}".strip(), sf_h))
+            # Vervolgtekst die samen met subfilter gegroepeerd werd → toevoegen
+            if cur_code is not None:
+                if omschr:  cur_omschr.append(omschr)
+                if extra:   cur_extra.append(extra)
+                if kenmrk:  cur_kenmerk.append(kenmrk)
+                if eenhd:   cur_eenheid.append(eenhd)
+                if offrte and not cur_offerte: cur_offerte = offrte
             continue
 
-        # ── Code ─────────────────────────────────────────────────────────
+        # ── Nieuwe code → start nieuw record ─────────────────────────────
         if code and CODE_RE.match(code):
             flush()
             cur_code    = code
@@ -227,7 +228,7 @@ def _parse(lines):
             cur_offerte = offrte
             continue
 
-        # ── Vervolgregel ─────────────────────────────────────────────────
+        # ── Vervolgregel (ook na subfilter-label!) ────────────────────────
         if cur_code is not None:
             if omschr:  cur_omschr.append(omschr)
             if extra:   cur_extra.append(extra)
@@ -241,16 +242,57 @@ def _parse(lines):
 
 
 def _assign(records, subfilters):
+    """
+    Wijs subfilters toe aan records via een combinatie van:
+    1. Als het eerste VOLGENDE subfilter binnen 20pt van de code staat
+       (= subfilter hoort bij deze code): gebruik dat subfilter
+    2. Anders: gebruik het LAATSTE subfilter dat al gezien was
+       (= code valt onder het vorige subfilter, meerdere codes per subfilter)
+    """
     sf_sorted = sorted(subfilters, key=lambda s: (s[0], s[1]))
+    
+    # Bouw per hoofdstuk een gesorteerde lijst
+    from collections import defaultdict
+    sf_per_hoofd = defaultdict(list)
+    for sp, sy, sf_str, shoofd in sf_sorted:
+        sf_per_hoofd[shoofd].append((sp, sy, sf_str))
+    
     for rec in records:
         rp, ry, pfx = rec["_p"], rec["_y"], rec["prefix"]
-        if pfx:
-            for sp, sy, sf_str, shoofd in sf_sorted:
-                if shoofd != pfx:
-                    continue
-                if (sp, sy) >= (rp, ry):
-                    rec["subfilter"] = sf_str
+        if pfx and pfx in sf_per_hoofd:
+            sfs = sf_per_hoofd[pfx]
+            
+            # Zoek het eerste subfilter NA de code (eerste opvolgende)
+            next_sf = None
+            next_dist = float("inf")
+            for sp, sy, sf_str in sfs:
+                if (sp, sy) > (rp, ry):
+                    # Afstand in "pagina-punten"
+                    dist = (sp - rp) * 1000 + (sy - ry)
+                    if dist < next_dist:
+                        next_dist = dist
+                        next_sf = (sp, sy, sf_str)
+                    break  # gesorteerd, eerste is dichtste
+            
+            # Zoek het laatste subfilter VOOR de code (meest recente vorige)
+            prev_sf = None
+            for sp, sy, sf_str in reversed(sfs):
+                if (sp, sy) <= (rp, ry):
+                    prev_sf = (sp, sy, sf_str)
                     break
+            
+            # Kies: het volgende subfilter hoort bij deze code als het
+            # op DEZELFDE PAGINA staat én binnen 20pt (y-verschil)
+            same_page_close = (next_sf and
+                               next_sf[0] == rp and
+                               (next_sf[1] - ry) <= 20)
+            if same_page_close:
+                rec["subfilter"] = next_sf[2]
+            elif prev_sf:
+                rec["subfilter"] = prev_sf[2]
+            elif next_sf:
+                rec["subfilter"] = next_sf[2]
+        
         del rec["_p"], rec["_y"], rec["prefix"]
     return records
 
