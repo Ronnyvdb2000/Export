@@ -42,13 +42,26 @@ def _col(x0, npi=False):
     if  35 <= x0 <  62: return "sf_nr"
     if  62 <= x0 < 197: return "sf_naam"
     if npi:
-        if 197 <= x0 < 225: return "sf_naam"
-        if 225 <= x0 < 256: return "code"
-        if 256 <= x0 < 396: return "omschrijving"
-        if 396 <= x0 < 624: return "extra_info"
-        if 624 <= x0 < 723: return "kenmerk"
-        if 723 <= x0 < 784: return "eenheid"
-        if 784 <= x0:        return "offerte"
+        # NPI kolomindeling (gemeten op pagina 175):
+        # x=229: code "100 Omschrijving" (samen)
+        # x=254: kenmerk (bv. "omheining: vaste omheining", "grootvee")
+        # x=397: extra_info (toelichting)
+        # x=723: eenheid (stuks, m, dieren)
+        # x=784: offerte
+        if 197 <= x0 < 227: return "sf_naam"
+        # NPI heeft geen aparte kenmerk-kolom
+        # x=229-255: code + omschrijving (samen in één span)
+        # x=256-393: omschrijving vervolg / type (hoort bij omschrijving)
+        # x=397-622: extra_info (toelichting)
+        # x=623-721: geen data (lege zone)
+        # x=722-781: eenheid
+        # x=782+:    offerte
+        if 227 <= x0 < 256: return "code"
+        if 256 <= x0 < 393: return "omschrijving"
+        if 393 <= x0 < 622: return "extra_info"
+        if 622 <= x0 < 722: return "ignore"
+        if 722 <= x0 < 782: return "eenheid"
+        if 782 <= x0:        return "offerte"
     else:
         if 197 <= x0 < 213: return "code"
         if 213 <= x0 < 370: return "omschrijving"
@@ -213,6 +226,12 @@ def _parse(lines):
                 if kenmrk:  cur_kenmerk.append(kenmrk)
                 if eenhd:   cur_eenheid.append(eenhd)
                 if offrte and not cur_offerte: cur_offerte = offrte
+            continue
+
+        # ── Code-zone tekst die geen geldige code is → omschrijving-vervolg
+        if code and not CODE_RE.match(code) and not CODE_COMBINED_RE.match(code):
+            if cur_code is not None:
+                cur_omschr.append(code)
             continue
 
         # ── Nieuwe code → start nieuw record ─────────────────────────────
