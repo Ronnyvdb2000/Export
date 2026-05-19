@@ -215,9 +215,14 @@ def _toc(ws, tabs_present):
         lnk = ws.cell(row, 2, tab_name)
         lnk.font = lnk_font; lnk.fill = fill; lnk.border = brd
         lnk.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-        # Interne hyperlink via HYPERLINK formule werkt betrouwbaarder dan .hyperlink
+        # Interne hyperlink: gebruik openpyxl Hyperlink object met location
+        from openpyxl.worksheet.hyperlink import Hyperlink as XlHyperlink
         safe_name = tab_name.replace("'", "''")
-        lnk.value = f"=HYPERLINK("#{safe_name}!A1","{tab_name}")"
+        lnk.hyperlink = XlHyperlink(
+            ref=lnk.coordinate,
+            location=f"'{safe_name}'!A1",
+            tooltip=full_title
+        )
 
         t = ws.cell(row, 3, full_title)
         t.font = txt_font; t.fill = fill; t.border = brd
