@@ -1,20 +1,22 @@
 """
 layout_engine.py – VLIF4 PDF naar ruwe Excel
 
-Vastgesteld patroon (pagina 9+10):
-  y=339.6  code=30  omschr="Ijsbatterij"   extra="Een ijsbatterij..."  kenmerk kWh
-  y=349.9  SUBFILTER 2.1.1 Bewaren en koelen   ← 10pt onder code, ONDERBREEKT NIET
-  y=351.6  extra vervolg "hernieuwbare energie..."
-  y=443.1  code=30  omschr="Selectiepoort met"
-  y=453.4  SUBFILTER 2.1.2 Gestuurd koeverkeer
-  y=456.6  omschr vervolg "koeherkenning"   ← hoort bij Selectiepoort
-  y=476.0  code=30  omschr="Opdrijfhek..."
+Ondersteunt meerdere blokken/versies automatisch:
+- Detecteert NPI-startpagina via kolomhoofd-rij (SUBFILTER % OMSCHRIJVING...)
+- Detecteert NPI kolomposities uit die kolomhoofd-rij
+- Werkt voor blok 01-2026, blok 02-2026 en toekomstige versies
 
-Regels:
-  1. Subfilter-label onderbreekt de lopende record NIET
-  2. Vervolgtekst na subfilter hoort nog bij de vorige code
-  3. Nieuwe record begint pas bij een NIEUWE code-regel
-  4. Subfilter wordt toegewezen aan het EERSTVOLGENDE code-record
+Kolomindeling blok 2&3 (gemeten):
+  sf_nr    x=39.5    zone 35–62
+  sf_naam  x=75.5    zone 62–197
+  code     x=200.5   zone 197–213
+  omschr   x=223.8   zone 213–370
+  extra    x=372.6   zone 370–597
+  kenmerk  x=599.5   zone 597–697
+  eenheid  x=698.7   zone 697–770
+  offerte  x=769.7   zone 770+
+
+NPI kolomindeling: automatisch gedetecteerd uit PDF.
 """
 
 import re
@@ -38,64 +40,114 @@ SKIP = {"SUBFILTER", "OMSCHRIJVING", "EXTRA_INFO", "KENMERK",
         "EENHEID", "OFFERTE", "%"}
 
 
-def _col(x0, npi=False):
+def _detect_npi(pdf_path):
+    """
+    Detecteert de NPI-startpagina en kolomgrenzen automatisch
+    door te zoeken naar de kolomhoofd-rij met SUBFILTER + % + OMSCHRIJVING.
+    Geeft (npi_start_page, npi_col_bounds) terug.
+    npi_col_bounds = dict met x-grenzen per kolom.
+    """
+    doc = fitz.open(pdf_path)
+    npi_start = None
+    npi_bounds = None
+
+    for page_no, page in enumerate(doc, start=1):
+        col_positions = {}
+        has_100_on_page = False
+        for block in page.get_text("dict")["blocks"]:
+            if block.get("type") != 0: continue
+            for line in block["lines"]:
+                for span in line["spans"]:
+                    txt = span["text"].strip()
+                    x0 = round(span["bbox"][0], 1)
+                    y0 = span["bbox"][1]
+                    if txt in ("SUBFILTER", "%", "OMSCHRIJVING", "EXTRA_INFO",
+                               "KENMERK", "EENHEID") and 60 < y0 < 520:
+                        col_positions[txt] = x0
+                    if txt.startswith("100 ") and 60 < y0 < 520:
+                        has_100_on_page = True
+
+        # Als we alle 6 kolomkoppen op één pagina vinden → NPI-pagina
+        if all(k in col_positions for k in
+               ("SUBFILTER", "%", "OMSCHRIJVING", "EXTRA_INFO", "KENMERK", "EENHEID")):
+            # Controleer: is dit de NPI pagina?
+            # NPI is de enige sectie met code "100" → check op dezelfde pagina
+            pct_x = col_positions["%"]
+            if has_100_on_page:  # NPI heeft code 100, andere secties niet
+                npi_start = page_no
+                # Bouw kolomgrenzen
+                subf_x  = col_positions["SUBFILTER"]
+                pct_x   = col_positions["%"]
+                omschr_x = col_positions["OMSCHRIJVING"]
+                extra_x  = col_positions["EXTRA_INFO"]
+                kenm_x   = col_positions["KENMERK"]
+                eenh_x   = col_positions["EENHEID"]
+
+                # Grenzen = midden tussen twee kolommen
+                npi_bounds = {
+                    # sf_nr: alleen het nummer zelf (x ≈ 39-41), max tot x=62
+                    "sf_nr_max"  : 62,
+                    # sf_naam: namen staan op x ≈ 68-85, tot net voor code-zone
+                    "sf_naam_max": pct_x - 2,
+                    # code: pct_x tot net voor omschr_x ("100 Naam" op x ≈ 198)
+                    "code_max"   : omschr_x - 2,
+                    # omschrijving: vervolgtekst op x ≈ 224, tot halverwege extra
+                    "omschr_max" : omschr_x + (extra_x - omschr_x) / 2,
+                    # extra_info: tot halverwege extra en kenmerk
+                    "kenm_max"   : extra_x  + (kenm_x - extra_x) / 2,
+                    # eenheid: kenmerk tot eenh_x + marge
+                    "eenh_max"   : kenm_x   + (eenh_x - kenm_x) / 2,
+                }
+                break
+
+    return npi_start, npi_bounds
+
+
+def _col_normal(x0):
+    """Kolomindeling blok 2 & 3."""
     if  35 <= x0 <  62: return "sf_nr"
     if  62 <= x0 < 197: return "sf_naam"
-    if npi:
-        # NPI kolomindeling (gemeten op pagina 175):
-        # x=229: code "100 Omschrijving" (samen)
-        # x=254: kenmerk (bv. "omheining: vaste omheining", "grootvee")
-        # x=397: extra_info (toelichting)
-        # x=723: eenheid (stuks, m, dieren)
-        # x=784: offerte
-        if 197 <= x0 < 227: return "sf_naam"
-        # NPI heeft geen aparte kenmerk-kolom
-        # x=229-255: code + omschrijving (samen in één span)
-        # x=256-393: omschrijving vervolg / type (hoort bij omschrijving)
-        # x=397-622: extra_info (toelichting)
-        # x=623-721: geen data (lege zone)
-        # x=722-781: eenheid
-        # x=782+:    offerte
-        if 227 <= x0 < 256: return "code"
-        if 256 <= x0 < 393: return "omschrijving"
-        if 393 <= x0 < 622: return "extra_info"
-        if 622 <= x0 < 722: return "ignore"
-        if 722 <= x0 < 782: return "eenheid"
-        if 782 <= x0:        return "offerte"
-    else:
-        if 197 <= x0 < 213: return "code"
-        if 213 <= x0 < 370: return "omschrijving"
-        if 370 <= x0 < 597: return "extra_info"
-        if 597 <= x0 < 697: return "kenmerk"
-        if 697 <= x0 < 770: return "eenheid"
-        if 770 <= x0:        return "offerte"
+    if 197 <= x0 < 213: return "code"
+    if 213 <= x0 < 370: return "omschrijving"
+    if 370 <= x0 < 597: return "extra_info"
+    if 597 <= x0 < 697: return "kenmerk"
+    if 697 <= x0 < 770: return "eenheid"
+    if 770 <= x0:        return "offerte"
     return "ignore"
 
 
-def _extract(pdf_path):
+def _col_npi(x0, bounds):
+    """Kolomindeling NPI (automatisch gedetecteerd)."""
+    if x0 < bounds["sf_nr_max"]:   return "sf_nr"
+    if x0 < bounds["sf_naam_max"]: return "sf_naam"
+    if x0 < bounds["code_max"]:    return "code"
+    if x0 < bounds["omschr_max"]:  return "omschrijving"
+    if x0 < bounds["kenm_max"]:    return "extra_info"
+    if x0 < bounds["eenh_max"]:    return "eenheid"
+    return "offerte"
+
+
+def _extract(pdf_path, npi_start, npi_bounds):
     doc = fitz.open(pdf_path)
     spans = []
-    npi = False
     for page_no, page in enumerate(doc, start=1):
-        if page_no >= 175:
-            npi = True
+        npi = (npi_start is not None and page_no >= npi_start)
         for block in page.get_text("dict",
                 flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]:
-            if block.get("type") != 0:
-                continue
+            if block.get("type") != 0: continue
             for line in block["lines"]:
                 for span in line["spans"]:
                     text = " ".join(span["text"].split())
-                    if not text:
-                        continue
+                    if not text: continue
                     x0   = span["bbox"][0]
                     y0   = span["bbox"][1]
                     size = span["size"]
-                    if y0 < Y_TOP or y0 > Y_BOT:
-                        continue
-                    c = _col(x0, npi)
-                    if c == "ignore":
-                        continue
+                    if y0 < Y_TOP or y0 > Y_BOT: continue
+                    if npi:
+                        c = _col_npi(x0, npi_bounds)
+                    else:
+                        c = _col_normal(x0)
+                    if c == "ignore": continue
                     spans.append((page_no, round(y0, 1), round(x0, 1),
                                   c, size >= 14, text))
     spans.sort(key=lambda s: (s[0], s[1], s[2]))
@@ -103,32 +155,26 @@ def _extract(pdf_path):
 
 
 def _group(spans):
-    """Groepeert spans op (page, y±4) tot regeldict."""
     lines = []
     cur = None
     for page, y, x0, col, big, text in spans:
         new = (cur is None or page != cur["page"] or abs(y - cur["y"]) > 4)
         if new:
-            if cur:
-                lines.append(cur)
+            if cur: lines.append(cur)
             cur = {"page": page, "y": y, "big": big}
-        if big:
-            cur["big"] = True
+        if big: cur["big"] = True
         cur[col] = (cur[col] + " " + text) if col in cur else text
-    if cur:
-        lines.append(cur)
+    if cur: lines.append(cur)
     return lines
 
 
 def _parse(lines):
     records    = []
-    subfilters = []  # (page, y, sf_str, hoofd_prefix)
+    subfilters = []
 
     cur_hoofd   = ""
     cur_prefix  = ""
     pending_nr  = ""
-
-    # Huidige open record
     cur_code    = None
     cur_omschr  = []
     cur_extra   = []
@@ -141,18 +187,17 @@ def _parse(lines):
     def flush():
         nonlocal cur_code, cur_omschr, cur_extra
         nonlocal cur_kenmerk, cur_eenheid, cur_offerte
-        if cur_code is None and not cur_omschr:
-            return
+        if cur_code is None and not cur_omschr: return
         records.append({
-            "hoofdstuk" : cur_hoofd,
-            "prefix"    : cur_prefix,
-            "subfilter" : "",
-            "code"      : cur_code or "",
+            "hoofdstuk"   : cur_hoofd,
+            "prefix"      : cur_prefix,
+            "subfilter"   : "",
+            "code"        : cur_code or "",
             "omschrijving": " ".join(cur_omschr).strip(),
-            "extra_info": " ".join(cur_extra).strip(),
-            "kenmerk"   : " / ".join(cur_kenmerk) if cur_kenmerk else "",
-            "eenheid"   : " / ".join(cur_eenheid) if cur_eenheid else "",
-            "offerte"   : cur_offerte,
+            "extra_info"  : " ".join(cur_extra).strip(),
+            "kenmerk"     : " / ".join(cur_kenmerk) if cur_kenmerk else "",
+            "eenheid"     : " / ".join(cur_eenheid) if cur_eenheid else "",
+            "offerte"     : cur_offerte,
             "_p": cur_page, "_y": cur_y,
         })
         cur_code    = None
@@ -175,25 +220,28 @@ def _parse(lines):
         page   = line["page"]
         y      = line["y"]
 
-        # Kolomkoppen overslaan
         if sf_nr.upper() in SKIP or sf_nm.upper() in SKIP or code in SKIP:
             continue
         if kenmrk == "(leeg)": kenmrk = ""
         if eenhd  == "(leeg)": eenhd  = ""
 
-        # NPI: "100 Naam" in code-veld → splitsen
+        # NPI: "100 Naam" gecombineerd in code-veld → splitsen
         cm = CODE_COMBINED_RE.match(code)
         if cm:
             omschr = (cm.group(2) + " " + omschr).strip()
             code   = cm.group(1)
 
-        # ── Grote kop (font ≥ 14) ────────────────────────────────────────
+        # Code-zone tekst die geen geldige code is → omschrijving-vervolg
+        if code and not CODE_RE.match(code) and not CODE_COMBINED_RE.match(code):
+            if cur_code is not None:
+                cur_omschr.append(code)
+            continue
+
+        # ── Grote kop ────────────────────────────────────────────────────
         if big:
-            # Tekst in sf_nr-zone die geen nummer is → behandel als naam
             if sf_nr and not HOOFD_NR_RE.match(sf_nr) and not SF_NR_RE.match(sf_nr):
                 sf_nm = (sf_nr + " " + sf_nm).strip()
                 sf_nr = ""
-
             if sf_nr and HOOFD_NR_RE.match(sf_nr) and sf_nm:
                 flush()
                 cur_hoofd  = f"{sf_nr} {sf_nm}".strip()
@@ -201,25 +249,29 @@ def _parse(lines):
                 pending_nr = ""
             elif sf_nr and HOOFD_NR_RE.match(sf_nr):
                 flush()
-                pending_nr = sf_nr
+                pending_nr  = sf_nr
+                cur_hoofd   = ""
+                cur_prefix  = ""
             elif sf_nm:
                 flush()
                 if pending_nr:
+                    # Pending nummer + naam = nieuw hoofdstuk
                     cur_hoofd  = f"{pending_nr} {sf_nm}".strip()
                     cur_prefix = pending_nr
                     pending_nr = ""
+                elif not cur_prefix:
+                    # Naam zonder nummer en zonder vorig hoofdstuk → nieuw
+                    cur_hoofd = sf_nm
                 else:
+                    # Naam loopt door over meerdere regels (bv. "ROERENDE AEA-TECHNIEKEN" + "IN BESTAANDE STALLEN")
                     cur_hoofd = (cur_hoofd + " " + sf_nm).strip()
             continue
 
         # ── Subfilter-label ───────────────────────────────────────────────
-        # De subfilter staat altijd ~10pt onder de code.
-        # De vervolgtekst van de omschrijving kan op dezelfde y staan
-        # als de subfilter (binnen 4pt groepering) → ook verwerken.
         if sf_nr and SF_NR_RE.match(sf_nr):
             sf_h = ".".join(sf_nr.split(".")[:2])
             subfilters.append((page, y, f"{sf_nr} {sf_nm}".strip(), sf_h))
-            # Vervolgtekst die samen met subfilter gegroepeerd werd → toevoegen
+            # Vervolgtekst die samen gegroepeerd werd
             if cur_code is not None:
                 if omschr:  cur_omschr.append(omschr)
                 if extra:   cur_extra.append(extra)
@@ -228,13 +280,7 @@ def _parse(lines):
                 if offrte and not cur_offerte: cur_offerte = offrte
             continue
 
-        # ── Code-zone tekst die geen geldige code is → omschrijving-vervolg
-        if code and not CODE_RE.match(code) and not CODE_COMBINED_RE.match(code):
-            if cur_code is not None:
-                cur_omschr.append(code)
-            continue
-
-        # ── Nieuwe code → start nieuw record ─────────────────────────────
+        # ── Nieuwe code ───────────────────────────────────────────────────
         if code and CODE_RE.match(code):
             flush()
             cur_code    = code
@@ -247,71 +293,47 @@ def _parse(lines):
             cur_offerte = offrte
             continue
 
-        # ── Vervolgregel (ook na subfilter-label!) ────────────────────────
+        # ── Vervolgregel ─────────────────────────────────────────────────
         if cur_code is not None:
             if omschr:  cur_omschr.append(omschr)
             if extra:   cur_extra.append(extra)
             if kenmrk:  cur_kenmerk.append(kenmrk)
             if eenhd:   cur_eenheid.append(eenhd)
-            if offrte and not cur_offerte:
-                cur_offerte = offrte
+            if offrte and not cur_offerte: cur_offerte = offrte
 
     flush()
     return records, subfilters
 
 
 def _assign(records, subfilters):
-    """
-    Wijs subfilters toe aan records via een combinatie van:
-    1. Als het eerste VOLGENDE subfilter binnen 20pt van de code staat
-       (= subfilter hoort bij deze code): gebruik dat subfilter
-    2. Anders: gebruik het LAATSTE subfilter dat al gezien was
-       (= code valt onder het vorige subfilter, meerdere codes per subfilter)
-    """
     sf_sorted = sorted(subfilters, key=lambda s: (s[0], s[1]))
-    
-    # Bouw per hoofdstuk een gesorteerde lijst
     from collections import defaultdict
-    sf_per_hoofd = defaultdict(list)
-    for sp, sy, sf_str, shoofd in sf_sorted:
-        sf_per_hoofd[shoofd].append((sp, sy, sf_str))
-    
+    sf_per = defaultdict(list)
+    for sp, sy, sf_str, sh in sf_sorted:
+        sf_per[sh].append((sp, sy, sf_str))
+
     for rec in records:
         rp, ry, pfx = rec["_p"], rec["_y"], rec["prefix"]
-        if pfx and pfx in sf_per_hoofd:
-            sfs = sf_per_hoofd[pfx]
-            
-            # Zoek het eerste subfilter NA de code (eerste opvolgende)
+        if pfx and pfx in sf_per:
+            sfs = sf_per[pfx]
             next_sf = None
-            next_dist = float("inf")
+            prev_sf = None
             for sp, sy, sf_str in sfs:
                 if (sp, sy) > (rp, ry):
-                    # Afstand in "pagina-punten"
-                    dist = (sp - rp) * 1000 + (sy - ry)
-                    if dist < next_dist:
-                        next_dist = dist
-                        next_sf = (sp, sy, sf_str)
-                    break  # gesorteerd, eerste is dichtste
-            
-            # Zoek het laatste subfilter VOOR de code (meest recente vorige)
-            prev_sf = None
+                    next_sf = (sp, sy, sf_str)
+                    break
             for sp, sy, sf_str in reversed(sfs):
                 if (sp, sy) <= (rp, ry):
                     prev_sf = (sp, sy, sf_str)
                     break
-            
-            # Kies: het volgende subfilter hoort bij deze code als het
-            # op DEZELFDE PAGINA staat én binnen 20pt (y-verschil)
-            same_page_close = (next_sf and
-                               next_sf[0] == rp and
-                               (next_sf[1] - ry) <= 20)
+            same_page_close = (next_sf and next_sf[0] == rp
+                               and (next_sf[1] - ry) <= 20)
             if same_page_close:
                 rec["subfilter"] = next_sf[2]
             elif prev_sf:
                 rec["subfilter"] = prev_sf[2]
             elif next_sf:
                 rec["subfilter"] = next_sf[2]
-        
         del rec["_p"], rec["_y"], rec["prefix"]
     return records
 
@@ -334,7 +356,13 @@ def _save(records, output_path):
 def parse_pdf(pdf_path):
     pdf_path = Path(pdf_path)
     print(f"📄 {pdf_path.name}")
-    spans   = _extract(pdf_path)
+    print("   NPI detecteren...")
+    npi_start, npi_bounds = _detect_npi(pdf_path)
+    if npi_start:
+        print(f"   NPI start pagina: {npi_start}")
+    else:
+        print("   Geen NPI sectie gevonden")
+    spans   = _extract(pdf_path, npi_start, npi_bounds)
     print(f"   {len(spans):,} spans")
     lines   = _group(spans)
     print(f"   {len(lines):,} regels")
