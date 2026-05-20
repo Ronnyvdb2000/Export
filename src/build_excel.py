@@ -18,31 +18,53 @@ TITLE_LINE1 = "VLIF CODELIJST"
 TITLE_LINE2 = "Geldig voor blokperiode 20/04/2026 – 30/06/2026"
 TITLE_LINE3 = "Versie 20/04/2026"
 
-# (tabblad_naam, hoofdstuk_key, volledige_titel)
-TABS = [
-    # Blok 2
-    ("Rundveestal",        "2.1 RUNDVEESTAL",                              "2.1 Rundveestal"),
-    ("Varkensstal",        "2.2 VARKENSSTAL",                              "2.2 Varkensstal"),
-    ("Pluimveestal",       "2.3 PLUIMVEESTAL",                             "2.3 Pluimveestal"),
-    ("Paardenstal",        "2.4 PAARDENSTAL",                              "2.4 Paardenstal"),
-    ("Schapenstal",        "2.5 SCHAPENSTAL",                              "2.5 Schapenstal"),
-    ("Geitenstal",         "2.6 GEITENSTAL",                               "2.6 Geitenstal"),
-    ("Hertenstal",         "2.7 HERTENSTAL",                               "2.7 Hertenstal"),
-    ("Konijnenstal",       "2.8 KONIJNENSTAL",                             "2.8 Konijnenstal"),
-    ("Serre",              "2.9 SERRE",                                    "2.9 Serre"),
-    ("Loods",              "2.10 LOODS",                                   "2.10 Loods"),
-    ("Onroerend buiten",   "2.11 ONROEREND BUITEN STAL/LOODS/SERRE",       "2.11 Onroerend buiten"),
-    ("Machines en Varia",  "2.12 MACHINES EN VARIA",                       "2.12 Machines en Varia"),
-    # Blok 3
-    ("AERi RV",            "3.1 RUNDVEESTAL",                              "3.1 AERi Rundveestal"),
-    ("AERi V",             "3.2 VARKENSSTAL",                              "3.2 AERi Varkensstal"),
-    ("AERi Pl",            "3.3 PLUIMVEESTAL",                             "3.3 AERi Pluimveestal"),
-    ("AERi OG",            "3.4 ONROEREND BUITEN NIEUWBOUWSTAL",           "3.4 AERi Onroerend buiten"),
-    ("AERi Roerend",       "3.5 ROERENDE AEA-TECHNIEKEN IN BESTAANDE STALLEN", "3.5 Roerende AEA-technieken"),
-    # Blok 4
-    ("NPI Onroerend",      "4.1 ONROEREND BUITEN STAL/LOODS/SERRE",        "4.1 NPI Onroerend buiten"),
-    ("NPI Machines",       "4.2 MACHINES EN VARIA",                        "4.2 NPI Machines en Varia"),
-]
+# Vaste mapping van hoofdstuk-sleutel naar korte tabbladnaam en volledige titel
+# Wordt aangevuld met automatisch gedetecteerde tabbladen
+TAB_MAP = {
+    "2.1 RUNDVEESTAL"                              : ("Rundveestal",       "2.1 Rundveestal"),
+    "2.2 VARKENSSTAL"                              : ("Varkensstal",       "2.2 Varkensstal"),
+    "2.3 PLUIMVEESTAL"                             : ("Pluimveestal",      "2.3 Pluimveestal"),
+    "2.4 PAARDENSTAL"                              : ("Paardenstal",       "2.4 Paardenstal"),
+    "2.5 SCHAPENSTAL"                              : ("Schapenstal",       "2.5 Schapenstal"),
+    "2.6 GEITENSTAL"                               : ("Geitenstal",        "2.6 Geitenstal"),
+    "2.7 HERTENSTAL"                               : ("Hertenstal",        "2.7 Hertenstal"),
+    "2.8 KONIJNENSTAL"                             : ("Konijnenstal",      "2.8 Konijnenstal"),
+    "2.9 SERRE"                                    : ("Serre",             "2.9 Serre"),
+    "2.10 LOODS"                                   : ("Loods",             "2.10 Loods"),
+    "2.11 ONROEREND BUITEN STAL/LOODS/SERRE"       : ("Onroerend buiten",  "2.11 Onroerend buiten"),
+    "2.12 MACHINES EN VARIA"                        : ("Machines en Varia", "2.12 Machines en Varia"),
+    "3.1 RUNDVEESTAL"                              : ("AERi RV",           "3.1 AERi Rundveestal"),
+    "3.2 VARKENSSTAL"                              : ("AERi V",            "3.2 AERi Varkensstal"),
+    "3.3 PLUIMVEESTAL"                             : ("AERi Pl",           "3.3 AERi Pluimveestal"),
+    "3.4 ONROEREND BUITEN NIEUWBOUWSTAL"            : ("AERi OG",           "3.4 AERi Onroerend buiten"),
+    "3.5 ROERENDE AEA-TECHNIEKEN IN BESTAANDE STALLEN": ("AERi Roerend",   "3.5 Roerende AEA-technieken"),
+    "4.1 ONROEREND BUITEN STAL/LOODS/SERRE"        : ("NPI Onroerend",     "4.1 NPI Onroerend buiten"),
+    "4.2 MACHINES EN VARIA"                         : ("NPI Machines",      "4.2 NPI Machines en Varia"),
+}
+
+def _build_tabs(df):
+    """Detecteer tabbladen automatisch uit de data, in volgorde van de PDF."""
+    import re
+    PREFIX_RE = re.compile(r"^(\d+\.\d+)")
+    seen = {}
+    order = []
+    for hoofd in df["hoofdstuk"]:
+        if hoofd and hoofd not in seen:
+            seen[hoofd] = True
+            order.append(hoofd)
+    tabs = []
+    for hoofd in order:
+        if hoofd in TAB_MAP:
+            tab_name, full_title = TAB_MAP[hoofd]
+        else:
+            # Fallback: genereer naam uit hoofdstuk
+            m = PREFIX_RE.match(hoofd)
+            prefix = m.group(1) if m else hoofd[:8]
+            words = hoofd.replace(prefix, "").strip().title()[:18]
+            tab_name  = f"{prefix} {words}".strip()[:31]
+            full_title = hoofd.title()[:60]
+        tabs.append((tab_name, hoofd, full_title))
+    return tabs
 
 HEADERS = ["Subfilter", "Code (%)", "Omschrijving", "Extra info",
            "Kenmerk", "Eenheid", "Offerte"]
@@ -241,8 +263,9 @@ def build(input_xlsx, output_xlsx):
     wb.remove(wb.active)
     toc_ws = wb.create_sheet("Inhoudsopgave", 0)
 
+    tabs = _build_tabs(df)
     tabs_present = []
-    for tab_name, hoofd_key, full_title in TABS:
+    for tab_name, hoofd_key, full_title in tabs:
         tab_df = df[df["hoofdstuk"] == hoofd_key].copy()
         if tab_df.empty:
             print(f"   ⚠️  Leeg: {hoofd_key}")
