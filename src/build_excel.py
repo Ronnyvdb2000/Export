@@ -13,10 +13,10 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# Titeltekst (uit pagina 1 PDF)
+# Titels worden dynamisch gelezen uit de ruwe Excel (_meta tabblad)
 TITLE_LINE1 = "VLIF CODELIJST"
-TITLE_LINE2 = "Geldig voor blokperiode 20/04/2026 – 30/06/2026"
-TITLE_LINE3 = "Versie 20/04/2026"
+TITLE_LINE2 = ""
+TITLE_LINE3 = ""
 
 # Vaste mapping van hoofdstuk-sleutel naar korte tabbladnaam en volledige titel
 # Wordt aangevuld met automatisch gedetecteerde tabbladen
@@ -255,9 +255,20 @@ def _toc(ws, tabs_present):
 
 
 def build(input_xlsx, output_xlsx):
+    global TITLE_LINE1, TITLE_LINE2, TITLE_LINE3
     print(f"📖 Inlezen: {input_xlsx}")
     df = pd.read_excel(input_xlsx, dtype=str)
     df = _fix(df)
+    # Lees titels uit metadata tabblad
+    try:
+        meta = pd.read_excel(input_xlsx, sheet_name="_meta", dtype=str)
+        titles = meta["titel"].fillna("").tolist()
+        if len(titles) >= 1 and titles[0]: TITLE_LINE1 = titles[0]
+        if len(titles) >= 2 and titles[1]: TITLE_LINE2 = titles[1]
+        if len(titles) >= 3 and titles[2]: TITLE_LINE3 = titles[2]
+        print(f"   Titel: {TITLE_LINE1} | {TITLE_LINE2}")
+    except Exception:
+        pass
 
     wb = Workbook()
     wb.remove(wb.active)
