@@ -40,6 +40,34 @@ SKIP = {"SUBFILTER", "OMSCHRIJVING", "EXTRA_INFO", "KENMERK",
         "EENHEID", "OFFERTE", "%"}
 
 
+def _extract_titles(pdf_path):
+    """Leest de 3 titelregels van pagina 1: VLIF CODELIJST, blokperiode, versie."""
+    doc = fitz.open(pdf_path)
+    page = doc[0]
+    spans = []
+    for block in page.get_text('dict')['blocks']:
+        if block.get('type') != 0: continue
+        for line in block['lines']:
+            for span in line['spans']:
+                txt = span['text'].strip()
+                if txt:
+                    spans.append((round(span['bbox'][1],1), span['size'], txt))
+    spans.sort()
+    
+    title1 = title2 = title3 = ""
+    for y, sz, t in spans:
+        if sz >= 20 and not title1:
+            title1 = t          # bv. "VLIF CODELIJST"
+        elif sz >= 16 and not title2 and title1:
+            title2 = t          # bv. "Geldig voor blokperiode..."
+        elif sz <= 12 and not title3 and title2:
+            if t.lower().startswith('versie'):
+                title3 = t      # bv. "Versie 20/01/2026"
+        if title1 and title2 and title3:
+            break
+    return title1, title2, title3
+
+
 def _detect_npi(pdf_path):
     """
     Detecteert de NPI-startpagina en kolomgrenzen automatisch
@@ -338,7 +366,7 @@ def _assign(records, subfilters):
     return records
 
 
-def _save(records, output_path):
+def _save(records, output_path, titles=None):
     df = pd.DataFrame(records, columns=[
         "hoofdstuk", "subfilter", "code",
         "omschrijving", "extra_info", "kenmerk", "eenheid", "offerte"
@@ -350,12 +378,19 @@ def _save(records, output_path):
         for i, w in enumerate([30,30,6,42,55,30,12,9], start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
         ws.freeze_panes = "A2"
+        # Sla titels op als metadata tabblad
+        if titles:
+            t1, t2, t3 = titles
+            meta_df = pd.DataFrame({"titel": [t1, t2, t3]})
+            meta_df.to_excel(writer, index=False, sheet_name="_meta")
     print(f"✅ {output_path}  ({len(df)} rijen)")
 
 
 def parse_pdf(pdf_path):
     pdf_path = Path(pdf_path)
     print(f"📄 {pdf_path.name}")
+    titles = _extract_titles(pdf_path)
+    print(f"   Titel: {titles[0]} | {titles[1]}")
     print("   NPI detecteren...")
     npi_start, npi_bounds = _detect_npi(pdf_path)
     if npi_start:
@@ -384,7 +419,8 @@ def main():
     if not recs:
         print("⚠️  Geen records")
         return
-    _save(recs, Path(a.output_xlsx))
+    titles = _extract_titles(Path(a.input_pdf))
+    _save(recs, Path(a.output_xlsx), titles=titles)
     print("🎉 Klaar")
 
 
