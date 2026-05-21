@@ -203,6 +203,7 @@ def _parse(lines):
     cur_hoofd   = ""
     cur_prefix  = ""
     pending_nr  = ""
+    last_sf_idx = None
     cur_code    = None
     cur_omschr  = []
     cur_extra   = []
@@ -299,7 +300,28 @@ def _parse(lines):
         if sf_nr and SF_NR_RE.match(sf_nr):
             sf_h = ".".join(sf_nr.split(".")[:2])
             subfilters.append((page, y, f"{sf_nr} {sf_nm}".strip(), sf_h))
+            last_sf_idx = len(subfilters) - 1
             # Vervolgtekst die samen gegroepeerd werd
+            if cur_code is not None:
+                if omschr:  cur_omschr.append(omschr)
+                if extra:   cur_extra.append(extra)
+                if kenmrk:  cur_kenmerk.append(kenmrk)
+                if eenhd:   cur_eenheid.append(eenhd)
+                if offrte and not cur_offerte: cur_offerte = offrte
+            continue
+        
+        # ── Vervolg subfilter-naam over meerdere regels ───────────────────
+        # Bv. "Voeder- en" / "drinkwater-" / "voorziening" op 3 regels
+        if (sf_nm and not sf_nr and not code and not big
+                and last_sf_idx is not None):
+            pg, sy, sf_str, sf_h = subfilters[last_sf_idx]
+            # Voeg samen: afbreekstreepje = woord loopt door, anders spatie
+            if sf_str.endswith('-'):
+                sf_str_clean = sf_str[:-1]
+                subfilters[last_sf_idx] = (pg, sy, sf_str_clean + sf_nm, sf_h)
+            else:
+                subfilters[last_sf_idx] = (pg, sy, sf_str + " " + sf_nm, sf_h)
+            # Verwerk ook andere velden uit dezelfde lijn
             if cur_code is not None:
                 if omschr:  cur_omschr.append(omschr)
                 if extra:   cur_extra.append(extra)
@@ -311,6 +333,7 @@ def _parse(lines):
         # ── Nieuwe code ───────────────────────────────────────────────────
         if code and CODE_RE.match(code):
             flush()
+            last_sf_idx = None  # subfilter-naam is volledig
             cur_code    = code
             cur_page    = page
             cur_y       = y
