@@ -132,8 +132,6 @@ def _data_sheet(ws, tab_df, tab_title):
 
     hdr_fill = PatternFill("solid", fgColor=C_DARK)
     hdr_font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
-    sec_fill = PatternFill("solid", fgColor=C_SEC)
-    sec_font = Font(bold=True, name="Arial", size=10, color=C_DARK)
     dat_font = Font(name="Arial", size=9)
     brd = _brd()
     wrap_cols = {3, 4, 5}   # omschrijving, extra_info, kenmerk
@@ -161,17 +159,8 @@ def _data_sheet(ws, tab_df, tab_title):
         sf = rec.get("subfilter", "")
 
         # Subfilter-sectieregel
+        # Subfilter wisselt → alt-kleuren resetten
         if sf != prev_sf and sf:
-            ws.cell(row_idx, 1, sf)
-            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=nc)
-            cell = ws.cell(row_idx, 1)
-            cell.font      = sec_font
-            cell.fill      = sec_fill
-            cell.border    = brd
-            cell.alignment = Alignment(horizontal="left", vertical="center",
-                                       indent=1)
-            ws.row_dimensions[row_idx].height = 16
-            row_idx += 1
             prev_sf = sf
             alt = False
 
