@@ -68,6 +68,94 @@ def _extract_titles(pdf_path):
     return title1, title2, title3
 
 
+def _detect_columns(pdf_path):
+    """
+    Detecteert kolomgrenzen automatisch uit de kolomhoofd-rij.
+    Geeft (normal_bounds, npi_start, npi_bounds) terug.
+    """
+    doc = fitz.open(pdf_path)
+    normal_bounds = None
+    npi_start     = None
+    npi_bounds    = None
+    has_100_seen  = False
+
+    for page_no, page in enumerate(doc, start=1):
+        cols = {}
+        has_100_on_page = False
+
+        for block in page.get_text("dict")["blocks"]:
+            if block.get("type") != 0: continue
+            for line in block["lines"]:
+                for span in line["spans"]:
+                    txt = span["text"].strip()
+                    x0  = round(span["bbox"][0], 1)
+                    y0  = span["bbox"][1]
+                    if not (60 < y0 < 520): continue
+
+                    for key in ("SUBFILTER", "EXTRA_INFO", "KENMERK",
+                                "EENHEID", "OFFERTE"):
+                        if txt == key:
+                            cols[key] = x0
+                    if txt == "%":
+                        cols["%"] = x0
+                    if "% OMSCHRIJVING" in txt:
+                        cols["%"]          = x0
+                        cols["OMSCHRIJVING"] = x0 + 20
+                    elif txt == "OMSCHRIJVING":
+                        cols["OMSCHRIJVING"] = x0
+                    if (txt == "100" or txt.startswith("100 ")) and 60 < y0 < 520:
+                        has_100_on_page = True
+
+        has_all = all(k in cols for k in
+                      ("SUBFILTER", "EXTRA_INFO", "KENMERK", "EENHEID"))
+
+        if has_all and normal_bounds is None and not has_100_on_page:
+            # Normale sectie (blok 2 & 3)
+            subf_x  = cols["SUBFILTER"]
+            pct_x   = cols.get("%", cols.get("OMSCHRIJVING", 200) - 30)
+            omschr_x = cols.get("OMSCHRIJVING", pct_x + 25)
+            extra_x  = cols["EXTRA_INFO"]
+            kenm_x   = cols["KENMERK"]
+            eenh_x   = cols["EENHEID"]
+            offerte_x = cols.get("OFFERTE", eenh_x + 70)
+
+            normal_bounds = {
+                "sf_nr_max"  : 62,
+                "sf_naam_max": pct_x - 5,  # ruimte voor code net links van pct_x
+                "code_max"   : omschr_x - 2,
+                "omschr_max" : omschr_x + (extra_x - omschr_x) / 2,
+                "extra_max"  : extra_x  + (kenm_x - extra_x) / 2,
+                "kenm_max"   : kenm_x   + (eenh_x - kenm_x) / 2,
+                "eenh_max"   : eenh_x   + (offerte_x - eenh_x) / 2,
+            }
+
+        if has_all and has_100_on_page and npi_start is None:
+            # NPI sectie
+            npi_start = page_no
+            subf_x   = cols["SUBFILTER"]
+            pct_x    = cols.get("%", 196)
+            omschr_x = cols.get("OMSCHRIJVING", pct_x + 25)
+            extra_x  = cols["EXTRA_INFO"]
+            kenm_x   = cols["KENMERK"]
+            eenh_x   = cols["EENHEID"]
+
+            npi_bounds = {
+                "sf_nr_max"  : 62,
+                "sf_naam_max": pct_x - 2,
+                "code_max"   : omschr_x - 2,
+                "omschr_max" : omschr_x + (extra_x - omschr_x) / 2,
+                "kenm_max"   : extra_x  + (kenm_x - extra_x) / 2,
+                "eenh_max"   : kenm_x   + (eenh_x - kenm_x) / 2,
+                "_no_offerte": True,
+            }
+
+        # Stop als beide gevonden, of aan het einde
+        if normal_bounds and npi_start:
+            break
+
+    return normal_bounds, npi_start, npi_bounds
+
+
 def _detect_npi(pdf_path):
     """
     Detecteert de NPI-startpagina en kolomgrenzen automatisch
@@ -92,7 +180,7 @@ def _detect_npi(pdf_path):
                     if txt in ("SUBFILTER", "%", "OMSCHRIJVING", "EXTRA_INFO",
                                "KENMERK", "EENHEID") and 60 < y0 < 520:
                         col_positions[txt] = x0
-                    if txt.startswith("100 ") and 60 < y0 < 520:
+                    if (txt == "100" or txt.startswith("100 ")) and 60 < y0 < 520:
                         has_100_on_page = True
 
         # Als we alle 6 kolomkoppen op één pagina vinden → NPI-pagina
@@ -133,17 +221,16 @@ def _detect_npi(pdf_path):
     return npi_start, npi_bounds
 
 
-def _col_normal(x0):
-    """Kolomindeling blok 2 & 3."""
-    if  35 <= x0 <  62: return "sf_nr"
-    if  62 <= x0 < 197: return "sf_naam"
-    if 197 <= x0 < 213: return "code"
-    if 213 <= x0 < 370: return "omschrijving"
-    if 370 <= x0 < 597: return "extra_info"
-    if 597 <= x0 < 697: return "kenmerk"
-    if 697 <= x0 < 770: return "eenheid"
-    if 770 <= x0:        return "offerte"
-    return "ignore"
+def _col_normal(x0, b):
+    """Kolomindeling blok 2 & 3, dynamisch op basis van gedetecteerde grenzen."""
+    if x0 < b["sf_nr_max"]:   return "sf_nr"
+    if x0 < b["sf_naam_max"]: return "sf_naam"
+    if x0 < b["code_max"]:    return "code"
+    if x0 < b["omschr_max"]:  return "omschrijving"
+    if x0 < b["extra_max"]:   return "extra_info"
+    if x0 < b["kenm_max"]:    return "kenmerk"
+    if x0 < b["eenh_max"]:    return "eenheid"
+    return "offerte"
 
 
 def _col_npi(x0, bounds):
@@ -157,7 +244,7 @@ def _col_npi(x0, bounds):
     return "offerte"
 
 
-def _extract(pdf_path, npi_start, npi_bounds):
+def _extract(pdf_path, normal_bounds, npi_start, npi_bounds):
     doc = fitz.open(pdf_path)
     spans = []
     for page_no, page in enumerate(doc, start=1):
@@ -176,7 +263,7 @@ def _extract(pdf_path, npi_start, npi_bounds):
                     if npi:
                         c = _col_npi(x0, npi_bounds)
                     else:
-                        c = _col_normal(x0)
+                        c = _col_normal(x0, normal_bounds)
                     if c == "ignore": continue
                     spans.append((page_no, round(y0, 1), round(x0, 1),
                                   c, size >= 14, text))
@@ -416,13 +503,18 @@ def parse_pdf(pdf_path):
     print(f"📄 {pdf_path.name}")
     titles = _extract_titles(pdf_path)
     print(f"   Titel: {titles[0]} | {titles[1]}")
-    print("   NPI detecteren...")
-    npi_start, npi_bounds = _detect_npi(pdf_path)
+    print("   Kolomgrenzen detecteren...")
+    normal_bounds, npi_start, npi_bounds = _detect_columns(pdf_path)
+    if normal_bounds:
+        print(f"   Kolommen: code_max={normal_bounds['code_max']:.0f} "
+              f"omschr_max={normal_bounds['omschr_max']:.0f} "
+              f"kenm_max={normal_bounds['kenm_max']:.0f} "
+              f"eenh_max={normal_bounds['eenh_max']:.0f}")
     if npi_start:
         print(f"   NPI start pagina: {npi_start}")
     else:
         print("   Geen NPI sectie gevonden")
-    spans   = _extract(pdf_path, npi_start, npi_bounds)
+    spans   = _extract(pdf_path, normal_bounds, npi_start, npi_bounds)
     print(f"   {len(spans):,} spans")
     lines   = _group(spans)
     print(f"   {len(lines):,} regels")
