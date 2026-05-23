@@ -123,8 +123,10 @@ def _detect_npi(pdf_path):
                     "omschr_max" : omschr_x + (extra_x - omschr_x) / 2,
                     # extra_info: tot halverwege extra en kenmerk
                     "kenm_max"   : extra_x  + (kenm_x - extra_x) / 2,
-                    # eenheid: kenmerk tot eenh_x + marge
-                    "eenh_max"   : kenm_x   + (eenh_x - kenm_x) / 2,
+                    # eenheid: van kenmerk tot rechtermarge (geen offerte in NPI)
+                    "eenh_max"   : kenm_x + (eenh_x - kenm_x) / 2,
+                    # offerte: niet aanwezig in NPI → alles boven eenh_x is eenheid
+                    "_no_offerte": True
                 }
                 break
 
