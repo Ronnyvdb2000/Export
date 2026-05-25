@@ -121,8 +121,8 @@ def _detect_columns(pdf_path):
 
             normal_bounds = {
                 "sf_nr_max"  : 62,
-                "sf_naam_max": pct_x - 5,  # ruimte voor code net links van pct_x
-                "code_max"   : omschr_x - 2,
+                "sf_naam_max": 195,  # vaste grens: codes staan op x≈197-202, namen op x≈62-85
+                "code_max"   : pct_x + (omschr_x - pct_x) / 2,
                 "omschr_max" : omschr_x + (extra_x - omschr_x) / 2,
                 "extra_max"  : extra_x  + (kenm_x - extra_x) / 2,
                 "kenm_max"   : kenm_x   + (eenh_x - kenm_x) / 2,
@@ -142,7 +142,7 @@ def _detect_columns(pdf_path):
             npi_bounds = {
                 "sf_nr_max"  : 62,
                 "sf_naam_max": pct_x - 2,
-                "code_max"   : omschr_x - 2,
+                "code_max"   : pct_x + (omschr_x - pct_x) / 2,
                 "omschr_max" : omschr_x + (extra_x - omschr_x) / 2,
                 "kenm_max"   : extra_x  + (kenm_x - extra_x) / 2,
                 "eenh_max"   : kenm_x   + (eenh_x - kenm_x) / 2,
@@ -206,8 +206,10 @@ def _detect_npi(pdf_path):
                     # sf_naam: namen staan op x ≈ 68-85, tot net voor code-zone
                     "sf_naam_max": pct_x - 2,
                     # code: pct_x tot net voor omschr_x ("100 Naam" op x ≈ 198)
-                    "code_max"   : omschr_x - 2,
-                    # omschrijving: vervolgtekst op x ≈ 224, tot halverwege extra
+                    # code_max: halverwege pct_x en omschr_x
+                    # zodat omschrijving (x≈224) in omschrijving-zone valt
+                    "code_max"   : pct_x + (omschr_x - pct_x) / 2,
+                    # omschrijving: vanaf omschr_x tot halverwege extra
                     "omschr_max" : omschr_x + (extra_x - omschr_x) / 2,
                     # extra_info: tot halverwege extra en kenmerk
                     "kenm_max"   : extra_x  + (kenm_x - extra_x) / 2,
@@ -223,7 +225,8 @@ def _detect_npi(pdf_path):
 
 def _col_normal(x0, b):
     """Kolomindeling blok 2 & 3, dynamisch op basis van gedetecteerde grenzen."""
-    if x0 < b["sf_nr_max"]:   return "sf_nr"
+    # sf_nr: alleen echte nummers (x ≈ 36-41), vaste grens op 55
+    if x0 < 55:               return "sf_nr"
     if x0 < b["sf_naam_max"]: return "sf_naam"
     if x0 < b["code_max"]:    return "code"
     if x0 < b["omschr_max"]:  return "omschrijving"
