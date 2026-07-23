@@ -31,8 +31,8 @@ from openpyxl.utils import get_column_letter
 Y_TOP = 60
 Y_BOT = 520
 
-CODE_RE          = re.compile(r"^(15|30|40|50|100)$")
-CODE_COMBINED_RE = re.compile(r"^(15|30|40|50|100)\s+(.+)$")
+CODE_RE          = re.compile(r"^(15|30|40|50|75|100)$")
+CODE_COMBINED_RE = re.compile(r"^(15|30|40|50|75|100)\s+(.+)$")
 SF_NR_RE         = re.compile(r"^\d+\.\d+\.\d+$")
 HOOFD_NR_RE      = re.compile(r"^\d+\.?\d*$")
 
