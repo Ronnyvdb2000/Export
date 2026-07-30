@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       pdf_path:
-        description: "Pad naar de VLIF4-PDF in de repo (bv. input/vlif4_2026.pdf)"
+        description: "Pad naar de VLIF4-PDF in de repo (bv. input/VLIF4 Codelijst blok 03-2026 .pdf)"
         required: true
         type: string
       notify_email:
@@ -28,13 +28,13 @@ jobs:
           python-version: "3.11"
 
       - name: Installeer dependencies
-        run: pip install pymupdf openpyxl
+        run: pip install pymupdf openpyxl pandas
 
       - name: Draai layout_engine.py
-        run: python layout_engine.py --input "${{ inputs.pdf_path }}" --output layout.json
+        run: python layout_engine.py --input-pdf "${{ inputs.pdf_path }}" --output-xlsx layout_output.xlsx
 
       - name: Draai build_excel.py
-        run: python build_excel.py --layout layout.json --output vlif4_export.xlsx
+        run: python src/build_excel.py --input layout_output.xlsx --output vlif4_export.xlsx
 
       - name: Upload Excel als artifact
         uses: actions/upload-artifact@v4
@@ -72,10 +72,10 @@ jobs:
         if: steps.cache-phi.outputs.cache-hit != 'true'
         run: curl -L "${{ env.PHI_MODEL_URL }}" -o "${{ env.PHI_MODEL_FILE }}"
 
-      - name: Draai validate_output.py
+      - name: Draai validatie_output.py
         id: validation
         run: |
-          python validate_output.py \
+          python src/validatie_output.py \
             --excel vlif4_export.xlsx \
             --source-pdf "${{ inputs.pdf_path }}" \
             --model "${{ env.PHI_MODEL_FILE }}" \
