@@ -3,10 +3,6 @@ name: VLIF4 Pipeline (build + validate + mail)
 on:
   workflow_dispatch:
     inputs:
-      pdf_path:
-        description: "Pad naar de VLIF4-PDF in de repo (bv. input/VLIF4 Codelijst blok 03-2026 .pdf)"
-        required: true
-        type: string
       notify_email:
         description: "E-mailadres voor het resultaat (leeg = gebruik NOTIFY_EMAIL secret)"
         required: false
@@ -15,6 +11,7 @@ on:
 env:
   PHI_MODEL_URL: "https://huggingface.co/microsoft/Phi-3.5-mini-instruct-gguf/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
   PHI_MODEL_FILE: "Phi-3.5-mini-instruct-Q4_K_M.gguf"
+  PDF_DIR: "input"
 
 jobs:
   build:
@@ -30,28 +27,35 @@ jobs:
       - name: Installeer dependencies
         run: pip install pymupdf openpyxl pandas
 
-      - name: Draai layout_engine.py
-        run: python layout_engine.py --input-pdf "${{ inputs.pdf_path }}" --output-xlsx layout_output.xlsx
+      - name: Verwerk alle PDF's in input/
+        run: |
+          mkdir -p output raw
+          shopt -s nullglob
+          for pdf in "$PDF_DIR"/*.pdf; do
+            name=$(basename "$pdf" .pdf)
+            echo "=== Verwerken: $pdf ==="
+            python layout_engine.py --input-pdf "$pdf" --output-xlsx "raw/${name}.xlsx"
+            python src/build_excel.py --input "raw/${name}.xlsx" --output "output/${name}.xlsx"
+          done
+          ls -la output/
 
-      - name: Draai build_excel.py
-        run: python src/build_excel.py --input layout_output.xlsx --output vlif4_export.xlsx
-
-      - name: Upload Excel als artifact
+      - name: Upload Excel-bestanden als artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vlif4-excel
-          path: vlif4_export.xlsx
+          name: vlif4-excels
+          path: output/*.xlsx
 
   validate:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4  # nodig om de originele PDF's opnieuw ter beschikking te hebben
 
-      - name: Download Excel-artifact
+      - name: Download Excel-artifacts
         uses: actions/download-artifact@v4
         with:
-          name: vlif4-excel
+          name: vlif4-excels
+          path: output
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -72,24 +76,33 @@ jobs:
         if: steps.cache-phi.outputs.cache-hit != 'true'
         run: curl -L "${{ env.PHI_MODEL_URL }}" -o "${{ env.PHI_MODEL_FILE }}"
 
-      - name: Draai validatie_output.py
+      - name: Valideer elk Excel-bestand
         id: validation
         run: |
-          python src/validatie_output.py \
-            --excel vlif4_export.xlsx \
-            --source-pdf "${{ inputs.pdf_path }}" \
-            --model "${{ env.PHI_MODEL_FILE }}" \
-            --report-out validation_report.xlsx
-        continue-on-error: true
+          mkdir -p reports
+          overall_issues=0
+          for xlsx in output/*.xlsx; do
+            name=$(basename "$xlsx" .xlsx)
+            pdf="${PDF_DIR}/${name}.pdf"
+            echo "=== Valideren: $xlsx tegen $pdf ==="
+            if python src/validatie_output.py \
+                --excel "$xlsx" \
+                --source-pdf "$pdf" \
+                --model "${{ env.PHI_MODEL_FILE }}" \
+                --report-out "reports/${name}_validation_report.xlsx"; then
+              echo "OK: $name"
+            else
+              echo "ISSUES: $name"
+              overall_issues=1
+            fi
+          done
+          echo "issues_found=$overall_issues" >> "$GITHUB_ENV"
 
-      - name: Bewaar exit-status van validatie
-        run: echo "issues_found=${{ steps.validation.outcome == 'failure' && '1' || '0' }}" >> "$GITHUB_ENV"
-
-      - name: Upload validatierapport als artifact
+      - name: Upload validatierapporten als artifact
         uses: actions/upload-artifact@v4
         with:
-          name: validation-report
-          path: validation_report.xlsx
+          name: validation-reports
+          path: reports/*.xlsx
 
       - name: Sla issues_found status op
         run: echo "${{ env.issues_found }}" > issues_found.txt
@@ -106,15 +119,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Excel-artifact
+      - name: Download Excel-artifacts
         uses: actions/download-artifact@v4
         with:
-          name: vlif4-excel
+          name: vlif4-excels
+          path: attachments
 
-      - name: Download validatierapport
+      - name: Download validatierapporten
         uses: actions/download-artifact@v4
         with:
-          name: validation-report
+          name: validation-reports
+          path: attachments
 
       - name: Download issues_found status
         uses: actions/download-artifact@v4
@@ -136,7 +151,4 @@ jobs:
           NOTIFY_EMAIL: ${{ inputs.notify_email || secrets.NOTIFY_EMAIL }}
         run: |
           ISSUES=$(cat issues_found.txt)
-          python send_email.py \
-            --excel vlif4_export.xlsx \
-            --report validation_report.xlsx \
-            --issues-found "$ISSUES"
+          python send_email.py --attachments-dir attachments --issues-found "$ISSUES"
