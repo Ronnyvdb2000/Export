@@ -1,5 +1,5 @@
 """
-validate_output.py
+validatie_output.py
 
 Derde stap in de VLIF4-pipeline (na layout_engine.py en build_excel.py).
 Controleert het gegenereerde Excel-bestand op:
