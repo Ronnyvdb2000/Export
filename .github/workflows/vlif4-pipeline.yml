@@ -61,7 +61,6 @@ jobs:
       - name: Installeer dependencies
         run: pip install pymupdf openpyxl llama-cpp-python
 
-      # Cache voorkomt dat het model (~2-4 GB) bij elke run opnieuw gedownload wordt
       - name: Cache Phi-model
         id: cache-phi
         uses: actions/cache@v4
@@ -70,74 +69,4 @@ jobs:
           key: phi-model-${{ env.PHI_MODEL_FILE }}
 
       - name: Download Phi-model (indien niet gecached)
-        if: steps.cache-phi.outputs.cache-hit != 'true'
-        run: curl -L "${{ env.PHI_MODEL_URL }}" -o "${{ env.PHI_MODEL_FILE }}"
-
-      - name: Draai validate_output.py
-        id: validation
-        run: |
-          python validate_output.py \
-            --excel vlif4_export.xlsx \
-            --source-pdf "${{ inputs.pdf_path }}" \
-            --model "${{ env.PHI_MODEL_FILE }}" \
-            --report-out validation_report.xlsx
-        continue-on-error: true  # zodat we ondanks issues toch nog mailen
-
-      - name: Bewaar exit-status van validatie
-        run: echo "issues_found=${{ steps.validation.outcome == 'failure' && '1' || '0' }}" >> "$GITHUB_ENV"
-
-      - name: Upload validatierapport als artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: validation-report
-          path: validation_report.xlsx
-
-      - name: Sla issues_found status op
-        run: echo "${{ env.issues_found }}" > issues_found.txt
-
-      - name: Upload issues_found status
-        uses: actions/upload-artifact@v4
-        with:
-          name: issues-found-flag
-          path: issues_found.txt
-
-  notify:
-    needs: validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download Excel-artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: vlif4-excel
-
-      - name: Download validatierapport
-        uses: actions/download-artifact@v4
-        with:
-          name: validation-report
-
-      - name: Download issues_found status
-        uses: actions/download-artifact@v4
-        with:
-          name: issues-found-flag
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Installeer dependencies
-        run: pip install sendgrid
-
-      - name: Verstuur mail via SendGrid
-        env:
-          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
-          SENDGRID_FROM: ${{ secrets.SENDGRID_FROM }}
-          NOTIFY_EMAIL: ${{ inputs.notify_email || secrets.NOTIFY_EMAIL }}
-        run: |
-          ISSUES=$(cat issues_found.txt)
-          python send_email.py \
-            --excel vlif4_export.xlsx \
-            --report validation_report.xlsx \
-            --issues-found "$ISSUES"
+        if: steps.cache-phi.outputs.cache-hit !
