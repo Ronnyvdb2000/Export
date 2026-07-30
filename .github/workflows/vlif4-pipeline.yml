@@ -69,4 +69,75 @@ jobs:
           key: phi-model-${{ env.PHI_MODEL_FILE }}
 
       - name: Download Phi-model (indien niet gecached)
+        if: steps.cache-phi.outputs.cache-hit !name: VLIF4 Pipeline (build + validate + mail)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pdf_path:
+        description: "Pad naar de VLIF4-PDF in de repo (bv. input/vlif4_2026.pdf)"
+        required: true
+        type: string
+      notify_email:
+        description: "E-mailadres voor het resultaat (leeg = gebruik NOTIFY_EMAIL secret)"
+        required: false
+        type: string
+
+env:
+  PHI_MODEL_URL: "https://huggingface.co/microsoft/Phi-3.5-mini-instruct-gguf/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
+  PHI_MODEL_FILE: "Phi-3.5-mini-instruct-Q4_K_M.gguf"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installeer dependencies
+        run: pip install pymupdf openpyxl
+
+      - name: Draai layout_engine.py
+        run: python layout_engine.py --input "${{ inputs.pdf_path }}" --output layout.json
+
+      - name: Draai build_excel.py
+        run: python build_excel.py --layout layout.json --output vlif4_export.xlsx
+
+      - name: Upload Excel als artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vlif4-excel
+          path: vlif4_export.xlsx
+
+  validate:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Excel-artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vlif4-excel
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installeer dependencies
+        run: pip install pymupdf openpyxl llama-cpp-python
+
+      - name: Cache Phi-model
+        id: cache-phi
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PHI_MODEL_FILE }}
+          key: phi-model-${{ env.PHI_MODEL_FILE }}
+
+      - name: Download Phi-model (indien niet gecached)
         if: steps.cache-phi.outputs.cache-hit !
