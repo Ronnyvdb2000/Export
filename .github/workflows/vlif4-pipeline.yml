@@ -9,7 +9,7 @@ on:
         type: string
 
 env:
-  PHI_MODEL_URL: "https://huggingface.co/microsoft/Phi-3.5-mini-instruct-gguf/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
+  PHI_MODEL_URL: "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
   PHI_MODEL_FILE: "Phi-3.5-mini-instruct-Q4_K_M.gguf"
   PDF_DIR: "input"
 
@@ -74,7 +74,14 @@ jobs:
 
       - name: Download Phi-model (indien niet gecached)
         if: steps.cache-phi.outputs.cache-hit != 'true'
-        run: curl -L "${{ env.PHI_MODEL_URL }}" -o "${{ env.PHI_MODEL_FILE }}"
+        run: |
+          curl -L "${{ env.PHI_MODEL_URL }}" -o "${{ env.PHI_MODEL_FILE }}"
+          size=$(stat -c%s "${{ env.PHI_MODEL_FILE }}")
+          echo "Gedownload bestand: $size bytes"
+          if [ "$size" -lt 1000000000 ]; then
+            echo "FOUT: bestand is te klein ($size bytes) — download is waarschijnlijk mislukt"
+            exit 1
+          fi
 
       - name: Valideer elk Excel-bestand
         id: validation
