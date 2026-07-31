@@ -92,32 +92,4 @@ def find_anomalous_cells(ws, max_len: int = 200):
     return issues
 
 
-def check_column_type_consistency(ws, numeric_columns: list[int]):
-    """
-    Controleert of kolommen die numeriek horen te zijn, ook effectief
-    numerieke waarden bevatten.
-    """
-    issues = []
-    for row in ws.iter_rows(min_row=2):
-        for cell in row:
-            if cell.column in numeric_columns and cell.value is not None:
-                val = str(cell.value).replace(",", ".").replace("€", "").strip()
-                try:
-                    float(val)
-                except ValueError:
-                    issues.append((cell.row, cell.column, cell.value,
-                                    "verwacht numeriek, maar bevat tekst (mogelijk kolomverschuiving)"))
-    return issues
-
-
-# ---------------------------------------------------------------------------
-# Laag 2: Phi-model semantische check
-# ---------------------------------------------------------------------------
-
-def load_phi_model(model_path: str):
-    from llama_cpp import Llama
-    return Llama(model_path=model_path, n_ctx=4096, n_threads=4, verbose=False)
-
-
-PROMPT_TEMPLATE = """Je bent een data-validatie-assistent. Hieronder staat een fragment
-brontekst uit een
+def
