@@ -34,7 +34,7 @@ jobs:
           for pdf in "$PDF_DIR"/*.pdf; do
             name=$(basename "$pdf" .pdf)
             echo "=== Verwerken: $pdf ==="
-            python layout_engine.py --input-pdf "$pdf" --output-xlsx "raw/${name}.xlsx"
+            python src/layout_engine.py --input-pdf "$pdf" --output-xlsx "raw/${name}.xlsx"
             python src/build_excel.py --input "raw/${name}.xlsx" --output "output/${name}.xlsx"
           done
           ls -la output/
