@@ -63,7 +63,7 @@ jobs:
           python-version: "3.11"
 
       - name: Installeer dependencies
-        run: pip install pymupdf openpyxl llama-cpp-python
+        run: pip install pymupdf openpyxl llama-cpp-python pandas
 
       - name: Cache Phi-model
         id: cache-phi
