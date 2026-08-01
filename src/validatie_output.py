@@ -6,15 +6,19 @@ Controleert het gegenereerde Excel-bestand op:
 
   1. Deterministische fouten (snel, 100% betrouwbaar):
      - rijtelling: aantal records in de brontekst (via parse_pdf() uit
-       layout_engine.py) vs. aantal rijen in Excel
+       layout_engine.py) vs. aantal rijen in Excel — met correctie voor
+       de titelblok-structuur (4 titelregels + 1 headerrij per tabblad)
+       en met het Inhoudsopgave-tabblad uitgesloten
      - anomale cellen: cellen met newlines / abnormale lengte (teken van
        samengevoegde rijen)
      - kolomtype-consistentie: een numerieke kolom die plots tekst bevat
        (optioneel, alleen als --numeric-columns is opgegeven)
 
   2. Semantische controle via een lokaal Phi-model (llama-cpp-python):
-     - voor elke verdachte rij wordt het model gevraagd of de rij
-       overeenkomt met precies één record uit de brontekst.
+     - voor elke verdachte rij wordt gezocht naar het relevante fragment
+       in de brontekst (rond de plek waar de celwaarde letterlijk
+       voorkomt), en dat fragment — niet zomaar het begin van de PDF —
+       wordt aan het model gegeven om te beoordelen.
 
 Resultaat: validation_report.xlsx met tabbladen "Summary" en "Issues".
 Exit code 0 = geen problemen, 1 = problemen gevonden (zodat de GitHub
@@ -41,6 +45,11 @@ from openpyxl import load_workbook, Workbook
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from layout_engine import parse_pdf
 
+# Structuur van elk data-tabblad in build_excel.py: 4 titelregels + 1 headerrij
+# vóór de eerste datarij (zie _title_rows() + header-append in _data_sheet()).
+NON_DATA_ROWS_PER_SHEET = 5
+TOC_SHEET_NAME = "Inhoudsopgave"
+
 
 # ---------------------------------------------------------------------------
 # Laag 1: deterministische checks
@@ -54,6 +63,21 @@ def extract_expected_record_count(pdf_path: str) -> int:
     """
     records = parse_pdf(pdf_path)
     return len([r for r in records if r.get("code", "") != ""])
+
+
+def count_actual_rows(wb) -> int:
+    """
+    Telt de echte datarijen over alle data-tabbladen, met correctie voor:
+      - het Inhoudsopgave-tabblad (bevat geen PDF-records, wordt overgeslagen)
+      - de titelblok-structuur (4 titelregels + 1 headerrij per tabblad,
+        niet slechts 1 header zoals eerder aangenomen)
+    """
+    total = 0
+    for ws in wb.worksheets:
+        if ws.title == TOC_SHEET_NAME:
+            continue
+        total += max(ws.max_row - NON_DATA_ROWS_PER_SHEET, 0)
+    return total
 
 
 def find_anomalous_cells(ws, max_len: int = 200):
@@ -119,6 +143,35 @@ def load_phi_model(model_path: str):
     return Llama(model_path=model_path, n_ctx=4096, n_threads=4, verbose=False)
 
 
+def find_relevant_context(full_text: str, cell_value: str, window: int = 900) -> str:
+    """
+    Zoekt het fragment in de volledige PDF-tekst waar de celwaarde
+    (of het begin ervan) letterlijk voorkomt, en geeft een venster
+    rond die plek terug. Dit vervangt het vroegere gedrag waarbij
+    altijd blindelings de eerste 1500 tekens van de PDF werden gebruikt
+    (= vaak enkel de titelpagina), wat de Phi-check zinloos maakte voor
+    rijen die verderop in het document staan.
+
+    Als de waarde niet letterlijk gevonden wordt (bv. door kleine
+    tekstverschillen bij extractie), valt dit terug op een korter
+    zoekfragment (eerste 60 tekens) — en als dat ook niet lukt, op de
+    eerste `window` tekens van het document als laatste redmiddel.
+    """
+    needle = str(cell_value).strip()
+    if not needle:
+        return full_text[:window]
+
+    idx = full_text.find(needle[:120])
+    if idx == -1:
+        idx = full_text.find(needle[:60])
+    if idx == -1:
+        return full_text[:window]
+
+    start = max(0, idx - window // 2)
+    end = min(len(full_text), idx + window // 2)
+    return full_text[start:end]
+
+
 PROMPT_TEMPLATE = (
     "Je bent een data-validatie-assistent. Hieronder staat een fragment "
     "brontekst uit een PDF, en een rij uit een Excel-bestand die daaruit werd "
@@ -181,6 +234,8 @@ def main():
 
     # Laag 1
     for sheet_name in wb.sheetnames:
+        if sheet_name == TOC_SHEET_NAME:
+            continue
         ws = wb[sheet_name]
         anomalies = find_anomalous_cells(ws)
         numeric_cols = [int(x) for x in args.numeric_columns.split(",") if x.strip()]
@@ -189,9 +244,9 @@ def main():
         all_issues.extend([(r, c, v, f"[{sheet_name}] {reason}") for r, c, v, reason in type_issues])
 
     expected = extract_expected_record_count(args.source_pdf)
-    actual = sum(ws.max_row - 1 for ws in wb.worksheets)  # -1 voor header per tab
+    actual = count_actual_rows(wb)
     summary["Verwacht aantal records (PDF)"] = expected
-    summary["Aantal rijen in Excel (alle tabs)"] = actual
+    summary["Aantal rijen in Excel (gecorrigeerd voor titelblok + TOC)"] = actual
     summary["Verschil"] = actual - expected
     if actual != expected:
         all_issues.append((0, 0, "", f"Rijtelling klopt niet: {actual} vs verwacht {expected}"))
@@ -205,7 +260,8 @@ def main():
         for i, (row, col, val, reason) in enumerate(all_issues):
             if row == 0:
                 continue
-            result = phi_check_row(llm, full_text, {"rij": row, "kolom": col, "waarde": val})
+            context = find_relevant_context(full_text, val)
+            result = phi_check_row(llm, context, {"rij": row, "kolom": col, "waarde": val})
             all_issues[i] = (row, col, val, f"{reason} | Phi-check: {result.get('reason', '')}")
 
     summary["Totaal aantal gevonden issues"] = len(all_issues)
