@@ -1,0 +1,83 @@
+name: VLIF4 wekelijkse check en verwerking
+
+on:
+  schedule:
+    # GitHub Actions cron draait in UTC. Omdat Brussel wisselt tussen
+    # UTC+1 (winter) en UTC+2 (zomer), staan hier twee cron-tijden per
+    # dag; de "local-time-gate" job hieronder zorgt dat de pipeline
+    # maar één keer per dag echt uitvoert, rond 18:00 Brusselse tijd.
+    - cron: "0 16 * * 1,3,5"  # 18:00 CEST (zomertijd)
+    - cron: "0 17 * * 1,3,5"  # 18:00 CET  (wintertijd)
+  workflow_dispatch: {}  # handmatig triggeren kan ook
+
+jobs:
+  local-time-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+    steps:
+      - id: gate
+        run: |
+          hour=$(TZ="Europe/Brussels" date +%H)
+          echo "Lokale tijd Brussel: $hour uur"
+          if [ "$hour" = "18" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  check-and-process:
+    needs: local-time-gate
+    if: needs.local-time-gate.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repo uitchecken
+        uses: actions/checkout@v4
+
+      - name: Python opzetten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dependencies installeren
+        run: |
+          pip install requests beautifulsoup4
+          # + de bestaande dependencies van layout_engine.py / build_excel.py
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Nieuwe PDF-versie checken en evt. downloaden
+        id: check
+        run: python scripts/check_new_pdf.py
+
+      - name: Nieuwe input committen naar de repo
+        if: steps.check.outputs.new_version == 'true'
+        run: |
+          git config user.name "vlif4-bot"
+          git config user.email "vlif4-bot@users.noreply.github.com"
+          git add input/ data/last_version.txt
+          git commit -m "Nieuwe VLIF4-codelijst gedetecteerd: blok ${{ steps.check.outputs.version }}"
+          git push
+
+      # --- Vanaf hier: enkel uitvoeren als er een nieuwe versie is ---
+
+      - name: PDF verwerken naar Excel
+        if: steps.check.outputs.new_version == 'true'
+        run: python layout_engine.py && python build_excel.py
+
+      - name: Validatie draaien
+        if: steps.check.outputs.new_version == 'true'
+        run: python validate_output.py   # pas aan naar het bestaande validatiescript
+
+      - name: Resultaat mailen
+        if: steps.check.outputs.new_version == 'true'
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python send_report_email.py  # pas aan naar het bestaande mailscript
+
+      - name: Geen nieuwe versie
+        if: steps.check.outputs.new_version != 'true'
+        run: echo "Geen nieuwe VLIF4-codelijst gevonden — niets te doen."
