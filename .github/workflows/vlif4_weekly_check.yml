@@ -20,24 +20,50 @@ jobs:
           python-version: "3.11"
 
       - name: Dependencies installeren
-        run: pip install requests beautifulsoup4
+        run: pip install requests beautifulsoup4 sendgrid
 
-      - name: Nieuwe PDF-versie checken en evt. downloaden
+      - name: Nieuwe PDF-versie checken, oude verwijderen en nieuwe downloaden
         id: check
         run: python scripts/check_new_pdf.py
 
-      # Deze commit+push triggert automatisch vlif4-pipeline.yml
-      # (build + Phi-validatie + SendGrid-mail), via de push-trigger
-      # op input/**/*.pdf.
-      - name: Nieuwe input committen en pushen
+      # git add -A vangt zowel de nieuwe PDF als de verwijdering van de
+      # oude PDF(s) op — dat is nodig, "git add input/" alleen pikt
+      # verwijderde bestanden niet mee.
+      - name: Wijzigingen committen en pushen
         if: steps.check.outputs.new_version == 'true'
         run: |
           git config user.name "vlif4-bot"
           git config user.email "vlif4-bot@users.noreply.github.com"
-          git add input/ data/last_version.txt
-          git commit -m "Nieuwe VLIF4-codelijst gedetecteerd: blok ${{ steps.check.outputs.version }}"
+          git add -A input/ data/last_version.txt
+          git commit -m "Nieuwe VLIF4-codelijst gedetecteerd: blok ${{ steps.check.outputs.version }} (oude PDF vervangen)"
           git push
 
       - name: Geen nieuwe versie
         if: steps.check.outputs.new_version != 'true'
         run: echo "Geen nieuwe VLIF4-codelijst gevonden — niets te doen."
+
+      # Zelfde voorrang als in vlif4-pipeline.yml: data/notify_email.txt
+      # (indien niet leeg) wint van de NOTIFY_EMAIL secret.
+      - name: Bepaal ontvanger
+        id: recipient
+        if: always()
+        run: |
+          if [ -f data/notify_email.txt ] && [ -s data/notify_email.txt ]; then
+            echo "email=$(cat data/notify_email.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+          else
+            echo "email=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Draait altijd, ook als er geen nieuwe versie is of als de
+      # check-stap zelf faalde — zo weet je zeker dat de run gebeurd is.
+      - name: Statusmail versturen
+        if: always()
+        env:
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          SENDGRID_FROM: ${{ secrets.SENDGRID_FROM }}
+          NOTIFY_EMAIL: ${{ steps.recipient.outputs.email || secrets.NOTIFY_EMAIL }}
+        run: |
+          python scripts/send_status_email.py \
+            --new-version "${{ steps.check.outputs.new_version || 'false' }}" \
+            --version "${{ steps.check.outputs.version }}" \
+            --previous-version "${{ steps.check.outputs.previous_version }}"
