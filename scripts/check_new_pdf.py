@@ -95,6 +95,7 @@ def main() -> int:
     if version == last_version:
         print(f"Geen nieuwe versie (huidige versie '{version}' al verwerkt).")
         write_github_output("new_version", "false")
+        write_github_output("previous_version", last_version or "")
         return 0
 
     print(f"Nieuwe versie gedetecteerd: '{last_version}' -> '{version}'.")
@@ -123,6 +124,7 @@ def main() -> int:
     write_github_output("new_version", "true")
     write_github_output("pdf_path", str(pdf_path))
     write_github_output("version", version)
+    write_github_output("previous_version", last_version or "")
     return 0
 
 
