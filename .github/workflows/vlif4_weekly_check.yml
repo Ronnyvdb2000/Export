@@ -2,12 +2,8 @@ name: VLIF4 wekelijkse check en verwerking
 
 on:
   schedule:
-    # GitHub Actions cron draait in UTC. Omdat Brussel wisselt tussen
-    # UTC+1 (winter) en UTC+2 (zomer), staan hier twee cron-tijden per
-    # dag; de "local-time-gate" job hieronder zorgt dat de pipeline
-    # maar één keer per dag echt uitvoert, rond 18:00 Brusselse tijd.
-    - cron: "0 16 * * 1,3,5"  # 18:00 CEST (zomertijd)
-    - cron: "0 17 * * 1,3,5"  # 18:00 CET  (wintertijd)
+    # GitHub Actions cron draait in UTC. 
+    - cron: "0 17 * * 1,3,5"  
   workflow_dispatch: {}  # handmatig triggeren kan ook
 
 jobs:
