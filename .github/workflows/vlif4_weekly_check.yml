@@ -2,10 +2,9 @@ name: VLIF4 wekelijkse check en verwerking
 
 on:
   schedule:
-    # GitHub Actions cron draait in UTC. 
-    - cron: "0 17 * * 1,3,5"  
+    - cron: "0 17 * * 1,3,5"  # elke ma/wo/vr om 17:00 UTC
   workflow_dispatch: {}  # handmatig triggeren kan ook
-
+ 
 jobs:
   local-time-gate:
     runs-on: ubuntu-latest
