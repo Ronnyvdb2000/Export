@@ -1,6 +1,9 @@
 name: VLIF4 Pipeline (build + validate + mail)
 
 on:
+  push:
+    paths:
+      - 'input/**/*.pdf'
   workflow_dispatch:
     inputs:
       notify_email:
