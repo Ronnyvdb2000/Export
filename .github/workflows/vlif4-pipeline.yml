@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       notify_email:
-        description: "E-mailadres voor het resultaat (leeg = gebruik NOTIFY_EMAIL secret)"
+        description: "E-mailadres voor het resultaat (leeg = gebruik data/notify_email.txt, of anders de NOTIFY_EMAIL secret)"
         required: false
         type: string
 
@@ -154,11 +154,24 @@ jobs:
       - name: Installeer dependencies
         run: pip install sendgrid
 
+      # Bepaalt het ontvanger-adres, met deze prioriteit:
+      #   1. handmatig ingevuld notify_email bij "Run workflow"
+      #   2. inhoud van data/notify_email.txt (indien aanwezig en niet leeg)
+      #   3. de NOTIFY_EMAIL secret (standaard fallback)
+      - name: Bepaal ontvanger
+        id: recipient
+        run: |
+          if [ -f data/notify_email.txt ] && [ -s data/notify_email.txt ]; then
+            echo "email=$(cat data/notify_email.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+          else
+            echo "email=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Verstuur mail via SendGrid
         env:
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           SENDGRID_FROM: ${{ secrets.SENDGRID_FROM }}
-          NOTIFY_EMAIL: ${{ inputs.notify_email || secrets.NOTIFY_EMAIL }}
+          NOTIFY_EMAIL: ${{ inputs.notify_email || steps.recipient.outputs.email || secrets.NOTIFY_EMAIL }}
         run: |
           ISSUES=$(cat issues_found.txt)
           python send_email.py --attachments-dir attachments --issues-found "$ISSUES"
