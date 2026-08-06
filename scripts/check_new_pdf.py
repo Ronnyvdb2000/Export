@@ -6,22 +6,15 @@ Controleert de VLIF-webpagina op een nieuwe versie van de
 "VLIF4 Codelijst blok ..." PDF, en downloadt deze naar input/ als
 er een nieuwe versie beschikbaar is.
 
-Werkwijze:
 1. Haalt de HTML op van de bronpagina.
-2. Zoekt alle <a>-tags waarvan de zichtbare linktekst begint met
+2. Zoekt de <a>-tag waarvan de zichtbare linktekst begint met
    "VLIF4 Codelijst blok" (case-insensitive).
-3. Uit de linktekst wordt een versie-string gehaald, bv. "03-2026"
-   uit "VLIF4 Codelijst blok 03-2026 .pdf".
-4. Deze versie-string wordt vergeleken met de inhoud van
-   data/last_version.txt.
+3. Haalt uit de linktekst een versie-string, bv. "03-2026" uit
+   "VLIF4 Codelijst blok 03-2026 .pdf".
+4. Vergelijkt die versie met data/last_version.txt.
 5. Bij een nieuwe versie: PDF downloaden naar input/, en
    data/last_version.txt bijwerken.
-6. Zet GitHub Actions output "new_version=true/false" en
-   "pdf_path=<pad>" zodat de rest van de workflow hierop kan reageren.
-
-Exit code is altijd 0 bij een geslaagde check (nieuw of niet nieuw);
-alleen bij een echte fout (pagina niet bereikbaar, geen match
-gevonden) stopt het script met een foutmelding.
+6. Zet GitHub Actions outputs "new_version", "pdf_path", "version".
 """
 
 import os
@@ -38,10 +31,7 @@ SOURCE_URL = (
     "vlif-investeringssteun-voor-land-en-tuinbouwers"
 )
 
-# Linktekst waarnaar gezocht wordt (case-insensitive, spaties flexibel)
 LINK_TEXT_PATTERN = re.compile(r"vlif4\s*codelijst\s*blok", re.IGNORECASE)
-
-# Haalt bv. "03-2026" uit "VLIF4 Codelijst blok 03-2026 .pdf"
 VERSION_PATTERN = re.compile(r"blok\s*([0-9]{1,2}\s*-\s*[0-9]{4})", re.IGNORECASE)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -51,7 +41,6 @@ LAST_VERSION_FILE = DATA_DIR / "last_version.txt"
 
 
 def normalize_version(raw: str) -> str:
-    """'03 - 2026' -> '03-2026'"""
     return re.sub(r"\s*-\s*", "-", raw.strip())
 
 
@@ -61,10 +50,7 @@ def find_codelijst_link(html: str, base_url: str):
         text = a.get_text(strip=True)
         if LINK_TEXT_PATTERN.search(text):
             href = urljoin(base_url, a["href"])
-            match = VERSION_PATTERN.search(text)
-            if not match:
-                # Val terug op de bestandsnaam in de URL zelf
-                match = VERSION_PATTERN.search(href)
+            match = VERSION_PATTERN.search(text) or VERSION_PATTERN.search(href)
             version = normalize_version(match.group(1)) if match else None
             return href, text, version
     return None, None, None
@@ -87,14 +73,12 @@ def main() -> int:
     href, link_text, version = find_codelijst_link(resp.text, SOURCE_URL)
 
     if not href:
-        print("FOUT: geen link gevonden die begint met 'VLIF4 Codelijst blok'.",
-              file=sys.stderr)
+        print("FOUT: geen link gevonden die begint met 'VLIF4 Codelijst blok'.", file=sys.stderr)
         write_github_output("new_version", "false")
         return 1
 
     if not version:
-        print(f"FOUT: kon geen versie (blok-periode) afleiden uit '{link_text}'.",
-              file=sys.stderr)
+        print(f"FOUT: kon geen versie afleiden uit '{link_text}'.", file=sys.stderr)
         write_github_output("new_version", "false")
         return 1
 
@@ -113,15 +97,22 @@ def main() -> int:
         write_github_output("new_version", "false")
         return 0
 
-    print(f"Nieuwe versie gedetecteerd: '{last_version}' -> '{version}'. PDF downloaden...")
+    print(f"Nieuwe versie gedetecteerd: '{last_version}' -> '{version}'.")
 
+    oude_pdfs = list(INPUT_DIR.glob("*.pdf"))
+    if oude_pdfs:
+        print(f"Oude PDF('s) verwijderen uit {INPUT_DIR}:")
+        for oude_pdf in oude_pdfs:
+            print(f"  - {oude_pdf.name}")
+            oude_pdf.unlink()
+
+    print("Nieuwe PDF downloaden...")
     pdf_resp = requests.get(href, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
     pdf_resp.raise_for_status()
 
-    filename = href.split("/")[-1].split("?")[0]
+    filename = href.split("/")[-1].split("?")[0].replace("%20", " ")
     if not filename.lower().endswith(".pdf"):
-        filename = f"VLIF4_Codelijst_blok_{version}.pdf"
-    filename = filename.replace("%20", " ")
+        filename = f"VLIF4 Codelijst blok {version}.pdf"
 
     pdf_path = INPUT_DIR / filename
     pdf_path.write_bytes(pdf_resp.content)
