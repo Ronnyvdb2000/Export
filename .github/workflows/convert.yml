@@ -1,9 +1,6 @@
 name: Convert PDF to Excel (PyMuPDF engine)
 
 on:
-  push:
-    paths:
-      - 'input/**/*.pdf'
   workflow_dispatch:
 
 env:
