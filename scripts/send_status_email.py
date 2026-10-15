@@ -37,3 +37,45 @@ def main() -> int:
             f"blok {args.version} (voorheen: {args.previous_version or 'onbekend'}).</p>"
             f"<p>De PDF is gedownload en de volledige pipeline "
             f"(build + validatie + export-mail) wordt automatisch gestart.</p>"
+            f"<p>Je ontvangt hierover zo dadelijk een aparte mail met het resultaat.</p>"
+        )
+    else:
+        subject = f"VLIF4-check: geen nieuwe versie (nog steeds blok {args.previous_version})"
+        html = (
+            f"<p>De wekelijkse VLIF4-check is uitgevoerd. Er staat nog steeds "
+            f"blok {args.previous_version} online — geen wijziging, geen verdere actie ondernomen.</p>"
+        )
+
+    message = Mail(
+        from_email=sender,
+        to_emails=recipient,
+        subject=subject,
+        html_content=html,
+    )
+
+    # --- Diagnose: toon de volledige foutrespons van SendGrid ---
+    # Oorspronkelijk:
+    # sg = SendGridAPIClient(api_key)
+    # response = sg.send(message)
+    sg = SendGridAPIClient(api_key)
+    print(f"Diagnose: key-lengte={len(api_key)}, begint met 'SG.'={api_key.startswith('SG.')}")
+    try:
+        response = sg.send(message)
+    except Exception as e:
+        body = getattr(e, "body", "?")
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", errors="replace")
+        print(f"SendGrid-fout: {type(e).__name__}")
+        print(f"  status: {getattr(e, 'status_code', '?')}")
+        print(f"  reden:  {getattr(e, 'reason', '?')}")
+        print(f"  body:   {body}")
+        sys.exit(1)
+
+    print(f"Statusmail verstuurd, statuscode: {response.status_code}")
+    if response.status_code >= 300:
+        sys.exit(1)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
