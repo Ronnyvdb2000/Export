@@ -1,0 +1,14 @@
+name: test-sendgrid
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test SendGrid key
+        env:
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+        run: |
+          echo "Key lengte: ${#SENDGRID_API_KEY}"
+          curl -s -w "\nHTTP %{http_code}\n" \
+            -H "Authorization: Bearer $SENDGRID_API_KEY" \
+            https://api.sendgrid.com/v3/scopes
