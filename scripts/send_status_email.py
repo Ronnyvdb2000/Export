@@ -37,29 +37,3 @@ def main() -> int:
             f"blok {args.version} (voorheen: {args.previous_version or 'onbekend'}).</p>"
             f"<p>De PDF is gedownload en de volledige pipeline "
             f"(build + validatie + export-mail) wordt automatisch gestart.</p>"
-            f"<p>Je ontvangt hierover zo dadelijk een aparte mail met het resultaat.</p>"
-        )
-    else:
-        subject = f"VLIF4-check: geen nieuwe versie (nog steeds blok {args.previous_version})"
-        html = (
-            f"<p>De wekelijkse VLIF4-check is uitgevoerd. Er staat nog steeds "
-            f"blok {args.previous_version} online — geen wijziging, geen verdere actie ondernomen.</p>"
-        )
-
-    message = Mail(
-        from_email=sender,
-        to_emails=recipient,
-        subject=subject,
-        html_content=html,
-    )
-
-    sg = SendGridAPIClient(api_key)
-    response = sg.send(message)
-    print(f"Statusmail verstuurd, statuscode: {response.status_code}")
-    if response.status_code >= 300:
-        sys.exit(1)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
