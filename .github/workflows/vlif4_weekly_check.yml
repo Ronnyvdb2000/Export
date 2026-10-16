@@ -20,7 +20,7 @@ jobs:
           python-version: "3.11"
 
       - name: Dependencies installeren
-        run: pip install requests beautifulsoup4 sendgrid
+        run: pip install requests beautifulsoup4 resend
 
       - name: Nieuwe PDF-versie checken, oude verwijderen en nieuwe downloaden
         id: check
