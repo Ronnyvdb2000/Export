@@ -1,82 +1,143 @@
+#!/usr/bin/env python3
 """
 send_email.py
 
-Stuurt alle Excel-bestanden (exports + validatierapporten) uit een map
-als bijlage via SendGrid.
+Verstuurt het resultaat van de VLIF4-pipeline via de Resend API,
+met alle Excel-bestanden en validatierapporten als bijlage.
 
-Benodigde environment variables (als GitHub secrets ingesteld):
-  SENDGRID_API_KEY   - API-key van je SendGrid-account
-  SENDGRID_FROM      - geverifieerd afzenderadres (single sender verification)
-  NOTIFY_EMAIL       - ontvanger; komt normaal uit de workflow_dispatch input,
-                       met een secret als fallback als er geen input is opgegeven
+Benodigde omgevingsvariabelen:
+- RESEND_API_KEY : de API-key van Resend (begint met 're_...')
+- NOTIFY_EMAIL   : het e-mailadres van de ontvanger
+                   (bij een gratis Resend-account moet dit het adres
+                    zijn waarmee je je bij Resend hebt aangemeld)
+- RESEND_FROM    : optioneel. Het afzenderadres.
+                   Standaard 'VLIF4 Bot <onboarding@resend.dev>'.
+
+Gebruik:
+    python send_email.py --attachments-dir attachments --issues-found 0
 """
 
 import argparse
 import base64
-import glob
 import os
 import sys
+from pathlib import Path
 
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail, Attachment, FileContent, FileName, FileType, Disposition
+import resend
 
 
-def build_attachment(path: str) -> Attachment:
-    with open(path, "rb") as f:
-        data = f.read()
-    encoded = base64.b64encode(data).decode()
-    return Attachment(
-        FileContent(encoded),
-        FileName(os.path.basename(path)),
-        FileType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-        Disposition("attachment"),
+DEFAULT_FROM = "VLIF4 Bot <onboarding@resend.dev>"
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024  # veilige grens onder Resend's limiet
+
+
+def collect_attachments(directory: Path):
+    """Leest alle bestanden in de map en levert een lijst Resend-bijlagen."""
+    attachments = []
+    if not directory.is_dir():
+        print(f"Waarschuwing: map '{directory}' bestaat niet — geen bijlagen.")
+        return attachments
+
+    for path in sorted(directory.iterdir()):
+        if not path.is_file():
+            continue
+        size = path.stat().st_size
+        if size > MAX_ATTACHMENT_BYTES:
+            print(f"Overgeslagen (te groot, {size} bytes): {path.name}")
+            continue
+        content = base64.b64encode(path.read_bytes()).decode("ascii")
+        attachments.append({"filename": path.name, "content": content})
+        print(f"Bijlage toegevoegd: {path.name} ({size} bytes)")
+
+    return attachments
+
+
+def build_content(issues_found: str, attachments_count: int):
+    """Bouwt onderwerp + HTML-body op basis van de issues_found-vlag."""
+    has_issues = str(issues_found).strip() not in ("0", "", "false", "False")
+
+    if has_issues:
+        subject = "VLIF4-pipeline: validatie vond aandachtspunten"
+        html = (
+            f"<h2 style='color:#c0392b;margin-bottom:0.4em'>"
+            f"Validatie: issues gevonden</h2>"
+            f"<p><b>Let op:</b> de validatie heeft één of meer issues "
+            f"gedetecteerd. Bekijk de rapporten in bijlage voor details.</p>"
+            f"<p>In bijlage vind je {attachments_count} bestand(en): "
+            f"de gegenereerde Excel-export(en) en het validatierapport.</p>"
+        )
+    else:
+        subject = "VLIF4-pipeline: alles in orde"
+        html = (
+            f"<h2 style='color:#27ae60;margin-bottom:0.4em'>"
+            f"Validatie: alles OK</h2>"
+            f"<p>De validatie is vlekkeloos doorlopen — geen issues gevonden.</p>"
+            f"<p>In bijlage vind je {attachments_count} bestand(en): "
+            f"de gegenereerde Excel-export(en) en het validatierapport.</p>"
+        )
+
+    html += (
+        "<p style='color:#666;font-size:0.9em'>"
+        "Automatisch verzonden door de VLIF4 GitHub Actions pipeline."
+        "</p>"
     )
+    return subject, html
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--attachments-dir", required=True,
-                         help="map met alle .xlsx-bestanden die als bijlage moeten meegaan")
-    parser.add_argument("--issues-found", type=int, default=0,
-                         help="1 als een van de validaties issues vond, anders 0")
+    parser.add_argument("--attachments-dir", required=True)
+    parser.add_argument("--issues-found", default="0")
     args = parser.parse_args()
 
-    api_key = os.environ.get("SENDGRID_API_KEY")
-    sender = os.environ.get("SENDGRID_FROM")
+    api_key = os.environ.get("RESEND_API_KEY")
     recipient = os.environ.get("NOTIFY_EMAIL")
+    sender = os.environ.get("RESEND_FROM", DEFAULT_FROM)
 
-    if not all([api_key, sender, recipient]):
-        print("Fout: SENDGRID_API_KEY, SENDGRID_FROM en NOTIFY_EMAIL moeten allemaal ingesteld zijn.")
+    if not all([api_key, recipient]):
+        print(
+            "Fout: RESEND_API_KEY en NOTIFY_EMAIL moeten beide ingesteld zijn.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    files = sorted(glob.glob(os.path.join(args.attachments_dir, "*.xlsx")))
-    if not files:
-        print(f"Geen .xlsx-bestanden gevonden in {args.attachments_dir}")
-        sys.exit(1)
+    resend.api_key = api_key
 
-    status = "⚠️ Validatieproblemen gevonden — zie rapport(en)" if args.issues_found else "✅ Validatie geslaagd, geen issues"
-    bestandslijst = "".join(f"<li>{os.path.basename(f)}</li>" for f in files)
+    attachments = collect_attachments(Path(args.attachments_dir))
+    subject, html = build_content(args.issues_found, len(attachments))
 
-    message = Mail(
-        from_email=sender,
-        to_emails=recipient,
-        subject=f"VLIF4-export klaar — {status}",
-        html_content=(
-            f"<p>De VLIF4-pipeline is uitgevoerd voor {len(files)} bestand(en).</p>"
-            f"<p><b>Status:</b> {status}</p>"
-            f"<ul>{bestandslijst}</ul>"
-        ),
+    # --- Diagnose: laat zien met welke configuratie we vertrekken ---
+    print(
+        f"Diagnose: key-lengte={len(api_key)}, "
+        f"begint met 're_'={api_key.startswith('re_')}"
+    )
+    print(
+        f"Diagnose: from={sender!r}, to={recipient!r}, "
+        f"issues_found={args.issues_found!r}, bijlagen={len(attachments)}"
     )
 
-    message.attachment = [build_attachment(f) for f in files]
+    params = {
+        "from": sender,
+        "to": [recipient],
+        "subject": subject,
+        "html": html,
+    }
+    if attachments:
+        params["attachments"] = attachments
 
-    sg = SendGridAPIClient(api_key)
-    response = sg.send(message)
-    print(f"Mail verstuurd, statuscode: {response.status_code}")
-
-    if response.status_code >= 300:
+    try:
+        email = resend.Emails.send(params)
+    except Exception as e:
+        status = getattr(e, "code", None) or getattr(e, "status_code", "?")
+        body = getattr(e, "message", None) or str(e)
+        print(f"Resend-fout: {type(e).__name__}", file=sys.stderr)
+        print(f"  status: {status}", file=sys.stderr)
+        print(f"  body:   {body}", file=sys.stderr)
         sys.exit(1)
+
+    email_id = email.get("id") if isinstance(email, dict) else email
+    print(f"Resultaatmail verzonden naar {recipient} (id: {email_id})")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
