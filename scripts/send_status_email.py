@@ -4,15 +4,49 @@ send_status_email.py
 
 Verstuurt een korte statusmail na elke run van de wekelijkse
 VLIF4-check, zowel bij een nieuwe versie als wanneer alles bij het
-oude blijft. Gebruikt dezelfde SendGrid-secrets als de hoofdpipeline.
+oude blijft. Gebruikt de Resend API (in plaats van SendGrid).
+
+Benodigde omgevingsvariabelen:
+- RESEND_API_KEY : de API-key van Resend (begint met 're_...')
+- NOTIFY_EMAIL   : het e-mailadres van de ontvanger
+                   (bij een gratis Resend-account moet dit het adres
+                    zijn waarmee je je bij Resend hebt aangemeld)
+- RESEND_FROM    : optioneel. Het afzenderadres.
+                   Standaard 'VLIF4 Bot <onboarding@resend.dev>'.
 """
 
 import argparse
 import os
 import sys
 
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
+import resend
+
+
+DEFAULT_FROM = "VLIF4 Bot <onboarding@resend.dev>"
+
+
+def build_content(new_version: str, version: str, previous_version: str):
+    """Bouwt onderwerp + HTML-body op basis van de argumenten."""
+    if new_version == "true":
+        subject = f"VLIF4-check: nieuwe versie gevonden (blok {version})"
+        html = (
+            f"<p>De wekelijkse VLIF4-check heeft een <b>nieuwe versie</b> gevonden: "
+            f"blok {version} (voorheen: {previous_version or 'onbekend'}).</p>"
+            f"<p>De PDF is gedownload en de volledige pipeline "
+            f"(build + validatie + export-mail) wordt automatisch gestart.</p>"
+            f"<p>Je ontvangt hierover zo dadelijk een aparte mail met het resultaat.</p>"
+        )
+    else:
+        subject = (
+            f"VLIF4-check: geen nieuwe versie "
+            f"(nog steeds blok {previous_version or 'onbekend'})"
+        )
+        html = (
+            f"<p>De wekelijkse VLIF4-check is uitgevoerd. Er staat nog steeds "
+            f"blok {previous_version or 'onbekend'} online — geen wijziging, "
+            f"geen verdere actie ondernomen.</p>"
+        )
+    return subject, html
 
 
 def main() -> int:
@@ -22,58 +56,51 @@ def main() -> int:
     parser.add_argument("--previous-version", default="")
     args = parser.parse_args()
 
-    api_key = os.environ.get("SENDGRID_API_KEY")
-    sender = os.environ.get("SENDGRID_FROM")
+    api_key = os.environ.get("RESEND_API_KEY")
     recipient = os.environ.get("NOTIFY_EMAIL")
+    sender = os.environ.get("RESEND_FROM", DEFAULT_FROM)
 
-    if not all([api_key, sender, recipient]):
-        print("Fout: SENDGRID_API_KEY, SENDGRID_FROM en NOTIFY_EMAIL moeten allemaal ingesteld zijn.")
+    if not all([api_key, recipient]):
+        print(
+            "Fout: RESEND_API_KEY en NOTIFY_EMAIL moeten beide ingesteld zijn.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    if args.new_version == "true":
-        subject = f"VLIF4-check: nieuwe versie gevonden (blok {args.version})"
-        html = (
-            f"<p>De wekelijkse VLIF4-check heeft een <b>nieuwe versie</b> gevonden: "
-            f"blok {args.version} (voorheen: {args.previous_version or 'onbekend'}).</p>"
-            f"<p>De PDF is gedownload en de volledige pipeline "
-            f"(build + validatie + export-mail) wordt automatisch gestart.</p>"
-            f"<p>Je ontvangt hierover zo dadelijk een aparte mail met het resultaat.</p>"
-        )
-    else:
-        subject = f"VLIF4-check: geen nieuwe versie (nog steeds blok {args.previous_version})"
-        html = (
-            f"<p>De wekelijkse VLIF4-check is uitgevoerd. Er staat nog steeds "
-            f"blok {args.previous_version} online — geen wijziging, geen verdere actie ondernomen.</p>"
-        )
+    resend.api_key = api_key
 
-    message = Mail(
-        from_email=sender,
-        to_emails=recipient,
-        subject=subject,
-        html_content=html,
+    subject, html = build_content(
+        args.new_version, args.version, args.previous_version
     )
 
-    # --- Diagnose: toon de volledige foutrespons van SendGrid ---
-    # Oorspronkelijk:
-    # sg = SendGridAPIClient(api_key)
-    # response = sg.send(message)
-    sg = SendGridAPIClient(api_key)
-    print(f"Diagnose: key-lengte={len(api_key)}, begint met 'SG.'={api_key.startswith('SG.')}")
+    # --- Diagnose: laat zien met welke configuratie we vertrekken ---
+    print(
+        f"Diagnose: key-lengte={len(api_key)}, "
+        f"begint met 're_'={api_key.startswith('re_')}"
+    )
+    print(f"Diagnose: from={sender!r}, to={recipient!r}")
+
+    params: resend.Emails.SendParams = {
+        "from": sender,
+        "to": [recipient],
+        "subject": subject,
+        "html": html,
+    }
+
     try:
-        response = sg.send(message)
+        email = resend.Emails.send(params)
     except Exception as e:
-        body = getattr(e, "body", "?")
-        if isinstance(body, bytes):
-            body = body.decode("utf-8", errors="replace")
-        print(f"SendGrid-fout: {type(e).__name__}")
-        print(f"  status: {getattr(e, 'status_code', '?')}")
-        print(f"  reden:  {getattr(e, 'reason', '?')}")
-        print(f"  body:   {body}")
+        # Probeer zoveel mogelijk detail uit de exception te halen
+        status = getattr(e, "code", None) or getattr(e, "status_code", "?")
+        body = getattr(e, "message", None) or str(e)
+        print(f"Resend-fout: {type(e).__name__}", file=sys.stderr)
+        print(f"  status: {status}", file=sys.stderr)
+        print(f"  body:   {body}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Statusmail verstuurd, statuscode: {response.status_code}")
-    if response.status_code >= 300:
-        sys.exit(1)
+    # De SDK geeft normaal een dict terug met minstens een 'id'
+    email_id = email.get("id") if isinstance(email, dict) else email
+    print(f"Statusmail verstuurd naar {recipient} (id: {email_id})")
     return 0
 
 
