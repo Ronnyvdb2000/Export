@@ -52,7 +52,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4  # nodig om de originele PDF's opnieuw ter beschikking te hebben
+      - uses: actions/checkout@v4
 
       - name: Download Excel-artifacts
         uses: actions/download-artifact@v4
@@ -152,7 +152,7 @@ jobs:
           python-version: "3.11"
 
       - name: Installeer dependencies
-        run: pip install sendgrid
+        run: pip install resend
 
       # Bepaalt het ontvanger-adres, met deze prioriteit:
       #   1. handmatig ingevuld notify_email bij "Run workflow"
@@ -167,10 +167,10 @@ jobs:
             echo "email=" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Verstuur mail via SendGrid
+      - name: Verstuur mail via Resend
         env:
-          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
-          SENDGRID_FROM: ${{ secrets.SENDGRID_FROM }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ secrets.RESEND_FROM }}
           NOTIFY_EMAIL: ${{ inputs.notify_email || steps.recipient.outputs.email || secrets.NOTIFY_EMAIL }}
         run: |
           ISSUES=$(cat issues_found.txt)
