@@ -58,7 +58,9 @@ def main() -> int:
 
     api_key = os.environ.get("RESEND_API_KEY")
     recipient = os.environ.get("NOTIFY_EMAIL")
-    sender = os.environ.get("RESEND_FROM", DEFAULT_FROM)
+    # Oorspronkelijk: sender = os.environ.get("RESEND_FROM", DEFAULT_FROM)
+    # Aangepast: een lege RESEND_FROM (secret bestaat niet) valt nu ook terug op de default.
+    sender = os.environ.get("RESEND_FROM") or DEFAULT_FROM
 
     if not all([api_key, recipient]):
         print(
@@ -74,35 +76,3 @@ def main() -> int:
     )
 
     # --- Diagnose: laat zien met welke configuratie we vertrekken ---
-    print(
-        f"Diagnose: key-lengte={len(api_key)}, "
-        f"begint met 're_'={api_key.startswith('re_')}"
-    )
-    print(f"Diagnose: from={sender!r}, to={recipient!r}")
-
-    params: resend.Emails.SendParams = {
-        "from": sender,
-        "to": [recipient],
-        "subject": subject,
-        "html": html,
-    }
-
-    try:
-        email = resend.Emails.send(params)
-    except Exception as e:
-        # Probeer zoveel mogelijk detail uit de exception te halen
-        status = getattr(e, "code", None) or getattr(e, "status_code", "?")
-        body = getattr(e, "message", None) or str(e)
-        print(f"Resend-fout: {type(e).__name__}", file=sys.stderr)
-        print(f"  status: {status}", file=sys.stderr)
-        print(f"  body:   {body}", file=sys.stderr)
-        sys.exit(1)
-
-    # De SDK geeft normaal een dict terug met minstens een 'id'
-    email_id = email.get("id") if isinstance(email, dict) else email
-    print(f"Statusmail verstuurd naar {recipient} (id: {email_id})")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
