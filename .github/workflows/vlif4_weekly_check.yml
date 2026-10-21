@@ -61,8 +61,8 @@ jobs:
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           RESEND_FROM: ${{ secrets.RESEND_FROM }}
-          NOTIFY_EMAIL: ${{ steps.recipient.outputs.email || secrets.NOTIFY_EMAIL }}        run: |
-        run: | 
+          NOTIFY_EMAIL: ${{ steps.recipient.outputs.email || secrets.NOTIFY_EMAIL }}
+        run: |
           python scripts/send_status_email.py \
             --new-version "${{ steps.check.outputs.new_version || 'false' }}" \
             --version "${{ steps.check.outputs.version }}" \
