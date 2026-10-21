@@ -91,7 +91,9 @@ def main() -> int:
 
     api_key = os.environ.get("RESEND_API_KEY")
     recipient = os.environ.get("NOTIFY_EMAIL")
-    sender = os.environ.get("RESEND_FROM", DEFAULT_FROM)
+    # Oorspronkelijk: sender = os.environ.get("RESEND_FROM", DEFAULT_FROM)
+    # Aangepast: een lege RESEND_FROM (secret bestaat niet) valt nu ook terug op de default.
+    sender = os.environ.get("RESEND_FROM") or DEFAULT_FROM
 
     if not all([api_key, recipient]):
         print(
