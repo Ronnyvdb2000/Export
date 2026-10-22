@@ -53,15 +53,6 @@ jobs:
           else
             echo "email=" >> "$GITHUB_OUTPUT"
           fi
-      - name: Diagnose script
-        if: always()
-        run: |
-          wc -l scripts/send_status_email.py
-          echo "--- laatste 8 regels ---"
-          tail -n 8 scripts/send_status_email.py
-          echo "--- aanwezig? ---"
-          grep -c "Diagnose" scripts/send_status_email.py || true
-          grep -c "__main__" scripts/send_status_email.py || true
       # Draait altijd, ook als er geen nieuwe versie is of als de
       # check-stap zelf faalde — zo weet je zeker dat de run gebeurd is.
       - name: Statusmail versturen
