@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
 check_new_pdf.py
-Detecteert een nieuwe VLIF-codelijst op de Vlaanderen-pagina,
-downloadt de PDF en start de verwerking (PDF -> Excel -> validatie -> mail).
+Detecteert een nieuwe VLIF-codelijst via een headless browser,
+downloadt de PDF en start de verwerking.
 """
 
 import os
 import re
-import json
 import hashlib
 import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urljoin
+from playwright.sync_api import sync_playwright
 
 # ---------------------------------------------------------------------------
 # Configuratie
@@ -33,10 +32,7 @@ EXCEL_DIR.mkdir(exist_ok=True)
 # ---------------------------------------------------------------------------
 # Regexes
 # ---------------------------------------------------------------------------
-# Vangt "VLIF4 Codelijst blok ..." in alle varianten (spaties, streepjes, enz.)
 LINK_TEXT_PATTERN = re.compile(r"vlif4.*codelijst.*blok", re.IGNORECASE)
-
-# Accepteert zowel "03-2026" als "4 2026" (spatie of streepje tussen blok en jaar)
 VERSION_PATTERN = re.compile(
     r"blok\s*([0-9]{1,2})\s*[-\s]\s*([0-9]{4})",
     re.IGNORECASE,
@@ -46,34 +42,47 @@ VERSION_PATTERN = re.compile(
 # Helpers
 # ---------------------------------------------------------------------------
 def normalize_version(raw: str) -> str:
-    """Normaliseer '4-2026' of '4 2026' naar '4-2026'."""
     parts = re.split(r"[-\s]+", raw.strip())
     if len(parts) == 2:
         return f"{parts[0]}-{parts[1]}"
     return raw.strip()
 
-def fetch_html(url: str) -> str:
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0 Safari/537.36"
-        )
-    }
-    resp = requests.get(url, headers=headers, timeout=60)
-    resp.raise_for_status()
-    return resp.text
-
-def find_codelijst_link(html: str, base_url: str):
+def fetch_rendered_links(url: str) -> list[dict]:
     """
-    Zoek de eerste link met tekst die op de VLIF-codelijst lijkt.
+    Laadt de pagina in een headless browser en retourneert alle links
+    (tekst + href) die op de pagina staan na uitvoering van JavaScript.
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(url, wait_until="networkidle", timeout=120_000)
+
+        # Wacht expliciet op de tekst "VLIF4 Codelijst" (max 30 sec)
+        try:
+            page.wait_for_selector("text=VLIF4 Codelijst", timeout=30_000)
+        except Exception:
+            pass  # Ga toch verder; misschien is de tekst er nog niet
+
+        links = page.eval_on_selector_all(
+            "a[href]",
+            """els => els.map(a => ({
+                text: a.innerText.trim(),
+                href: a.href,
+                download: a.getAttribute('download') || ''
+            }))"""
+        )
+        browser.close()
+        return links
+
+def find_codelijst_link(links: list[dict], base_url: str):
+    """
+    Zoek de eerste link waarvan de tekst op de VLIF-codelijst lijkt.
     Retourneert (href, link_text, version) of (None, None, None).
     """
-    soup = BeautifulSoup(html, "html.parser")
-    for a in soup.find_all("a", href=True):
-        text = a.get_text(strip=True)
+    for link in links:
+        text = link["text"]
         if LINK_TEXT_PATTERN.search(text):
-            href = urljoin(base_url, a["href"])
+            href = urljoin(base_url, link["href"])
             match = VERSION_PATTERN.search(text) or VERSION_PATTERN.search(href)
             version = None
             if match:
@@ -111,34 +120,28 @@ def write_state(path: Path, value: str) -> None:
 # Hoofdlogica
 # ---------------------------------------------------------------------------
 def main():
-    print(f"[{datetime.now().isoformat()}] Ophalen: {URL}")
-    html = fetch_html(URL)
+    print(f"[{datetime.now().isoformat()}] Ophalen (met JS-rendering): {URL}")
+    links = fetch_rendered_links(URL)
 
-    href, link_text, version = find_codelijst_link(html, URL)
+    href, link_text, version = find_codelijst_link(links, URL)
     if not href:
-        print("Geen VLIF-codelijstlink gevonden op de pagina.")
-        # Optioneel: alle links loggen voor debug
-        soup = BeautifulSoup(html, "html.parser")
-        for a in soup.find_all("a", href=True):
-            if ".pdf" in a["href"].lower():
-                print("  PDF-link:", a.get_text(strip=True), "->", a["href"])
+        print("Geen VLIF-codelijstlink gevonden na JS-rendering.")
+        print("Gevonden PDF-links (voor debug):")
+        for l in links:
+            if ".pdf" in l["href"].lower():
+                print(f"  '{l['text']}' -> {l['href']}")
         return
 
     print(f"Gevonden link: '{link_text}'")
     print(f"  href: {href}")
     print(f"  versie: {version}")
 
-    if version is None:
-        print("WAARSCHUWING: geen versie in linktekst/href gevonden. Ga verder met hash-check.")
-
     last_version = read_state(STATE_FILE)
     print(f"Laatst verwerkte versie: {last_version!r}")
 
-    # Bepaal of dit een nieuwe versie is
     is_new_version = version is not None and version != last_version
     print(f"Nieuwe versie? {is_new_version}")
 
-    # Download PDF (altijd, om hash te kunnen vergelijken)
     safe_name = f"vlif_codelijst_{version or 'onbekend'}.pdf".replace(" ", "_")
     pdf_path = PDF_DIR / safe_name
     content = download_pdf(href, pdf_path)
@@ -153,7 +156,6 @@ def main():
         print("Geen nieuwe versie en geen gewijzigde PDF. Stoppen.")
         return
 
-    # State bijwerken
     if version:
         write_state(STATE_FILE, version)
     write_state(PDF_STATE_FILE, new_hash)
@@ -163,8 +165,6 @@ def main():
     # -----------------------------------------------------------------------
     # Start de rest van de pipeline
     # -----------------------------------------------------------------------
-    # Pas dit aan naar jouw bestaande modules/functies:
-    #
     # from pdf_to_excel import convert_pdf_to_excel
     # from validate_excel import validate_excel
     # from send_email import send_email_with_attachment
@@ -177,8 +177,6 @@ def main():
     #     body=f"Bijgevoegd de nieuwe codelijst ({version or 'onbekende versie'}).",
     #     attachment=excel_path,
     # )
-    #
-    # Plaats hier de aanroepen zoals ze in jouw project heten.
     # -----------------------------------------------------------------------
     print("Pipeline gereed (vervolgstappen nog niet geconfigureerd in dit voorbeeld).")
 
