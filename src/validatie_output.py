@@ -34,6 +34,7 @@ Verwacht als input:
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -49,6 +50,10 @@ from layout_engine import parse_pdf
 # vóór de eerste datarij (zie _title_rows() + header-append in _data_sheet()).
 NON_DATA_ROWS_PER_SHEET = 5
 TOC_SHEET_NAME = "Inhoudsopgave"
+
+# NIEUW: een subfilter-label (kolom 1) is kort ("2.12.10 Zaai/ planttechniek", max. ~40
+# tekens in blok 03-2026). Veel langer wijst op vervuiling met tekst uit de omgeving.
+SUBFILTER_MAX_LEN = 80
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +85,54 @@ def count_actual_rows(wb) -> int:
     return total
 
 
-def find_anomalous_cells(ws, max_len: int = 200):
+def _norm(text: str) -> str:
+    """Witruimte (spaties, tabs, regeleinden) samenvoegen tot één spatie."""
+    return re.sub(r"\s+", " ", str(text)).strip()
+
+
+def is_long_text_confirmed(text: str, norm_source: str,
+                           ruimte: float = 0.25, anker: int = 80) -> bool:
+    """
+    NIEUW. Controleert of een lange celtekst als één passage in de PDF voorkomt.
+
+    Een lange cel is op zich geen fout: sommige notities in de codelijst zijn
+    echt 1700+ tekens (bv. "Niet aan te vragen bij afbraak van een gebouw ...",
+    18x aanwezig). Verdacht is een lange cel die NIET als één passage in de
+    bron staat, want dat is wat er gebeurt bij samengevoegde rijen of tekst
+    die uit de omgeving is meegeplakt.
+
+    Bevestigd als:
+      - de volledige tekst (witruimte genormaliseerd) letterlijk in de PDF staat, of
+      - de eerste en de laatste `anker` tekens allebei in de PDF staan en het
+        stuk PDF ertussen hooguit `ruimte` (25%) langer is dan de cel. Dat vangt
+        paginakoppen/-voeten op die midden in een lange notitie in de PDF-tekst staan.
+    """
+    t = _norm(text)
+    if not t or not norm_source:
+        return False
+    if t in norm_source:
+        return True
+    if len(t) < 2 * anker:
+        return False
+    start, einde = t[:anker], t[-anker:]
+    i = norm_source.find(start)
+    while i != -1:
+        j = norm_source.find(einde, i)
+        if j != -1 and (j + anker - i) <= len(t) * (1 + ruimte):
+            return True
+        i = norm_source.find(start, i + 1)
+    return False
+
+
+def find_anomalous_cells(ws, max_len: int = 200, source_text=None):
     """
     Zoekt cellen die wijzen op samengevoegde rijen:
       - bevat een newline-teken (meerdere records in één cel geplakt)
       - abnormaal lange tekst t.o.v. de rest van de kolom
+      - subfilter-label (kolom 1) ongewoon lang (NIEUW)
+    Met `source_text` (genormaliseerde PDF-tekst) worden lange cellen die
+    letterlijk als één passage in de PDF staan niet meer gemeld (NIEUW);
+    zonder `source_text` is het gedrag zoals voorheen.
     Retourneert lijst van (rij, kolom, waarde, reden).
     """
     issues = []
@@ -109,7 +157,20 @@ def find_anomalous_cells(ws, max_len: int = 200):
             lengths_sorted = sorted(lengths)
             median = lengths_sorted[len(lengths_sorted) // 2]
             val_len = len(str(cell.value))
+            # NIEUW: subfilter-label (kolom 1, datarijen) mag niet lang zijn. Rij < 6 zijn
+            # de titelrijen/kolomkop van build_excel.py en worden hier overgeslagen.
+            if (cell.column == 1 and cell.row > NON_DATA_ROWS_PER_SHEET
+                    and val_len > SUBFILTER_MAX_LEN):
+                issues.append((cell.row, cell.column, str(cell.value)[:80] + "...",
+                                f"subfilter-label ongewoon lang ({val_len} tekens, "
+                                f"verwacht hooguit {SUBFILTER_MAX_LEN})"))
+                continue
             if median > 0 and val_len > max(max_len, median * 3):
+                # NIEUW: lange cel die als één passage in de PDF staat is geen fout.
+                # Oorspronkelijk werd elke lange cel gemeld (61 meldingen op blok 03-2026,
+                # waarvan 60 gewone lange notities).
+                if source_text and is_long_text_confirmed(str(cell.value), source_text):
+                    continue
                 issues.append((cell.row, cell.column, str(cell.value)[:80] + "...",
                                 f"abnormale lengte ({val_len} tekens, mediaan kolom = {median})"))
 
@@ -143,8 +204,16 @@ def load_phi_model(model_path: str):
     return Llama(model_path=model_path, n_ctx=4096, n_threads=4, verbose=False)
 
 
-def find_relevant_context(full_text: str, cell_value: str, window: int = 900) -> str:
+def find_relevant_context_oud(full_text: str, cell_value: str, window: int = 900) -> str:
     """
+    OUD, NIET MEER GEBRUIKT (bewaard ter documentatie). Fouten van deze versie:
+      - de celwaarde in het rapport eindigt op "..." (80 tekens + "..."), waardoor
+        de zoekopdracht met 120 tekens nooit slaagt;
+      - de PDF-tekst bevat regeleinden midden in zinnen, waardoor ook de zoekopdracht
+        met 60 tekens faalde (getest op blok 03-2026);
+      - bij geen treffer viel hij terug op de eerste 900 tekens van de PDF (titelpagina),
+        zodat Phi telkens de inleiding beoordeelde in plaats van het juiste fragment.
+
     Zoekt het fragment in de volledige PDF-tekst waar de celwaarde
     (of het begin ervan) letterlijk voorkomt, en geeft een venster
     rond die plek terug. Dit vervangt het vroegere gedrag waarbij
@@ -172,6 +241,35 @@ def find_relevant_context(full_text: str, cell_value: str, window: int = 900) ->
     return full_text[start:end]
 
 
+def find_relevant_context(norm_source: str, cell_value: str, window: int = 900) -> str:
+    """
+    NIEUW. Zoekt in de genormaliseerde PDF-tekst (witruimte samengevoegd, zie _norm)
+    het fragment waar het begin van de celwaarde voorkomt, en geeft een venster rond
+    die plek terug. De waarde wordt eerst genormaliseerd en een afsluitende "..."
+    wordt verwijderd.
+
+    Geeft een LEGE string terug als niets gevonden wordt. De aanroeper slaat de
+    Phi-check dan over, in plaats van het model de titelpagina te laten beoordelen.
+    """
+    needle = _norm(cell_value)
+    if needle.endswith("..."):
+        needle = needle[:-3].rstrip()
+    if not needle:
+        return ""
+
+    idx = -1
+    for lengte in (120, 60, 40):
+        idx = norm_source.find(needle[:lengte])
+        if idx != -1:
+            break
+    if idx == -1:
+        return ""
+
+    start = max(0, idx - window // 2)
+    end = min(len(norm_source), idx + window // 2)
+    return norm_source[start:end]
+
+
 PROMPT_TEMPLATE = (
     "Je bent een data-validatie-assistent. Hieronder staat een fragment "
     "brontekst uit een PDF, en een rij uit een Excel-bestand die daaruit werd "
@@ -181,13 +279,15 @@ PROMPT_TEMPLATE = (
     "Vraag: komt deze Excel-rij overeen met PRECIES EEN record uit de brontekst, "
     "of lijken er meerdere records samengevoegd, of kolommen verschoven?\n\n"
     "Antwoord ALLEEN met geldige JSON, geen andere tekst:\n"
-    '{{"issue": true/false, "reason": "korte uitleg in het Nederlands"}}\n'
+    '{{"issue": true/false, "reason": "uitleg in het Nederlands, maximaal 25 woorden"}}\n'
+    # Oorspronkelijk: "korte uitleg in het Nederlands" (antwoorden werden soms afgekapt)
 )
 
 
 def phi_check_row(llm, source_text: str, row_data: dict) -> dict:
     prompt = PROMPT_TEMPLATE.format(source_text=source_text[:1500], row_data=json.dumps(row_data, ensure_ascii=False))
-    output = llm(prompt, max_tokens=200, temperature=0.0, stop=["\n\n"])
+    # Oorspronkelijk: max_tokens=200 (enkele antwoorden werden midden in de JSON afgekapt)
+    output = llm(prompt, max_tokens=300, temperature=0.0, stop=["\n\n"])
     text = output["choices"][0]["text"].strip()
     try:
         return json.loads(text)
@@ -232,12 +332,19 @@ def main():
     all_issues = []
     summary = {}
 
+    # NIEUW: PDF-tekst één keer inlezen (laag 1 en laag 2 gebruiken dezelfde tekst)
+    doc = fitz.open(args.source_pdf)
+    full_text = "\n".join(page.get_text() for page in doc)
+    doc.close()
+    norm_source = _norm(full_text)
+
     # Laag 1
     for sheet_name in wb.sheetnames:
         if sheet_name == TOC_SHEET_NAME:
             continue
         ws = wb[sheet_name]
-        anomalies = find_anomalous_cells(ws)
+        # Oorspronkelijk: anomalies = find_anomalous_cells(ws)
+        anomalies = find_anomalous_cells(ws, source_text=norm_source)
         numeric_cols = [int(x) for x in args.numeric_columns.split(",") if x.strip()]
         type_issues = check_column_type_consistency(ws, numeric_cols) if numeric_cols else []
         all_issues.extend([(r, c, v, f"[{sheet_name}] {reason}") for r, c, v, reason in anomalies])
@@ -254,13 +361,16 @@ def main():
     # Laag 2 (optioneel, alleen als een modelpad is meegegeven)
     if args.model and all_issues:
         llm = load_phi_model(args.model)
-        doc = fitz.open(args.source_pdf)
-        full_text = "\n".join(page.get_text() for page in doc)
-        doc.close()
+        # Oorspronkelijk werd hier de PDF opnieuw ingelezen (zonder normalisatie) en
+        # find_relevant_context(full_text, val) gebruikt; nu de genormaliseerde tekst van bovenaan.
         for i, (row, col, val, reason) in enumerate(all_issues):
             if row == 0:
                 continue
-            context = find_relevant_context(full_text, val)
+            context = find_relevant_context(norm_source, val)
+            if not context:
+                all_issues[i] = (row, col, val,
+                                 f"{reason} | Phi-check overgeslagen: fragment niet gevonden in de PDF")
+                continue
             result = phi_check_row(llm, context, {"rij": row, "kolom": col, "waarde": val})
             all_issues[i] = (row, col, val, f"{reason} | Phi-check: {result.get('reason', '')}")
 
