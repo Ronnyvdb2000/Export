@@ -40,6 +40,13 @@ TAB_MAP = {
     "3.5 ROERENDE AEA-TECHNIEKEN IN BESTAANDE STALLEN": ("AERi Roerend",   "3.5 Roerende AEA-technieken"),
     "4.1 ONROEREND BUITEN STAL/LOODS/SERRE"        : ("NPI Onroerend",     "4.1 NPI Onroerend buiten"),
     "4.2 MACHINES EN VARIA"                         : ("NPI Machines",      "4.2 NPI Machines en Varia"),
+    # NIEUW (blok 03-2026): de volgorde van "Machines en Varia" en "Onroerend buiten"
+    # is in de PDF omgedraaid t.o.v. de sleutels hierboven (2.11/2.12 en 4.1/4.2).
+    # De oude sleutels blijven staan voor oudere PDF-versies; deze komen erbij.
+    "2.11 MACHINES EN VARIA"                       : ("Machines en Varia", "2.11 Machines en Varia"),
+    "2.12 ONROEREND BUITEN STAL/LOODS/SERRE"       : ("Onroerend buiten",  "2.12 Onroerend buiten"),
+    "4.1 MACHINES EN VARIA"                        : ("NPI Machines",      "4.1 NPI Machines en Varia"),
+    "4.2 ONROEREND BUITEN STAL/LOODS/SERRE"        : ("NPI Onroerend",     "4.2 NPI Onroerend buiten"),
 }
 
 def _build_tabs(df):
