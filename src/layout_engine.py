@@ -362,6 +362,11 @@ def _parse(lines):
 
         # ── Grote kop ────────────────────────────────────────────────────
         if big:
+            # NIEUW: een grote kop (nieuw hoofdstuk) sluit de vorige subfilter-naam af.
+            # Zonder deze reset werd de inleidingstekst van hoofdstuk 3 als vervolg van
+            # de naam van het laatste subfilter van hoofdstuk 2 ("2.12.10 Zaai/
+            # planttechniek") beschouwd en achter dat label geplakt.
+            last_sf_idx = None
             if sf_nr and not HOOFD_NR_RE.match(sf_nr) and not SF_NR_RE.match(sf_nr):
                 sf_nm = (sf_nr + " " + sf_nm).strip()
                 sf_nr = ""
