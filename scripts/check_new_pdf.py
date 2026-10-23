@@ -6,7 +6,11 @@ Controleert de VLIF-webpagina op een nieuwe versie van de
 "VLIF4 Codelijst blok ..." PDF, en downloadt deze naar input/ als
 er een nieuwe versie beschikbaar is.
 
-1. Haalt de HTML op van de bronpagina.
+De pagina laadt de PDF-links via JavaScript. Daarom wordt de pagina
+gerenderd met een headless browser (Playwright) voordat de links
+worden uitgelezen.
+
+1. Rendert de pagina met Playwright.
 2. Zoekt de <a>-tag waarvan de zichtbare linktekst begint met
    "VLIF4 Codelijst blok" (case-insensitive).
 3. Haalt uit de linktekst een versie-string, bv. "03-2026" uit
@@ -24,7 +28,7 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 SOURCE_URL = (
     "https://lv.vlaanderen.be/subsidies/vlif-steun/"
@@ -44,12 +48,15 @@ def normalize_version(raw: str) -> str:
     return re.sub(r"\s*-\s*", "-", raw.strip())
 
 
-def find_codelijst_link(html: str, base_url: str):
-    soup = BeautifulSoup(html, "html.parser")
-    for a in soup.find_all("a", href=True):
-        text = a.get_text(strip=True)
+def find_codelijst_link(links: list[dict], base_url: str):
+    """
+    Zoekt in de door Playwright gerenderde links naar de VLIF-codelijst.
+    `links` is een lijst met {"text": ..., "href": ...}.
+    """
+    for link in links:
+        text = link["text"]
         if LINK_TEXT_PATTERN.search(text):
-            href = urljoin(base_url, a["href"])
+            href = urljoin(base_url, link["href"])
             match = VERSION_PATTERN.search(text) or VERSION_PATTERN.search(href)
             version = normalize_version(match.group(1)) if match else None
             return href, text, version
@@ -66,14 +73,35 @@ def write_github_output(name: str, value: str) -> None:
 
 
 def main() -> int:
-    print(f"Bronpagina ophalen: {SOURCE_URL}")
-    resp = requests.get(SOURCE_URL, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-    resp.raise_for_status()
+    print(f"Bronpagina renderen (Playwright): {SOURCE_URL}")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(SOURCE_URL, wait_until="networkidle", timeout=120_000)
 
-    href, link_text, version = find_codelijst_link(resp.text, SOURCE_URL)
+        # Wacht tot de tekst "VLIF4 Codelijst" in de DOM staat
+        try:
+            page.wait_for_selector("text=VLIF4 Codelijst", timeout=30_000)
+        except Exception:
+            print("Waarschuwing: 'VLIF4 Codelijst' niet binnen 30s in de DOM gevonden.")
+
+        links = page.eval_on_selector_all(
+            "a[href]",
+            """els => els.map(a => ({
+                text: (a.innerText || '').trim(),
+                href: a.href
+            }))"""
+        )
+        browser.close()
+
+    href, link_text, version = find_codelijst_link(links, SOURCE_URL)
 
     if not href:
         print("FOUT: geen link gevonden die begint met 'VLIF4 Codelijst blok'.", file=sys.stderr)
+        print("Gevonden PDF-links (debug):")
+        for l in links:
+            if ".pdf" in l["href"].lower():
+                print(f"  '{l['text']}' -> {l['href']}")
         write_github_output("new_version", "false")
         return 1
 
