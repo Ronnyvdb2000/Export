@@ -20,7 +20,9 @@ jobs:
           python-version: "3.11"
 
       - name: Dependencies installeren
-        run: pip install requests beautifulsoup4 resend
+        run: |
+          pip install requests resend playwright
+          playwright install --with-deps chromium
 
       - name: Nieuwe PDF-versie checken, oude verwijderen en nieuwe downloaden
         id: check
@@ -53,6 +55,7 @@ jobs:
           else
             echo "email=" >> "$GITHUB_OUTPUT"
           fi
+
       # Draait altijd, ook als er geen nieuwe versie is of als de
       # check-stap zelf faalde — zo weet je zeker dat de run gebeurd is.
       - name: Statusmail versturen
