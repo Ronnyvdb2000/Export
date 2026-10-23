@@ -2,8 +2,8 @@ name: VLIF4 wekelijkse check (detectie + download)
 
 on:
   schedule:
-    - cron: "0 17 * * 1,3,5"  # elke ma/wo/vr om 17:00 UTC
-  workflow_dispatch: {}  # handmatig triggeren kan ook
+    - cron: "0 17 * * 1,3,5"
+  workflow_dispatch: {}
 
 jobs:
   check-and-fetch:
@@ -28,24 +28,21 @@ jobs:
         id: check
         run: python scripts/check_new_pdf.py
 
-      # git add -A vangt zowel de nieuwe PDF als de verwijdering van de
-      # oude PDF(s) op — dat is nodig, "git add input/" alleen pikt
-      # verwijderde bestanden niet mee.
       - name: Wijzigingen committen en pushen
         if: steps.check.outputs.new_version == 'true'
+        env:
+          TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           git config user.name "vlif4-bot"
           git config user.email "vlif4-bot@users.noreply.github.com"
-          git add -A input/ data/last_version.txt
+          git add -A input/ data/
           git commit -m "Nieuwe VLIF4-codelijst gedetecteerd: blok ${{ steps.check.outputs.version }} (oude PDF vervangen)"
-          git push
+          git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
 
       - name: Geen nieuwe versie
         if: steps.check.outputs.new_version != 'true'
         run: echo "Geen nieuwe VLIF4-codelijst gevonden — niets te doen."
 
-      # Zelfde voorrang als in vlif4-pipeline.yml: data/notify_email.txt
-      # (indien niet leeg) wint van de NOTIFY_EMAIL secret.
       - name: Bepaal ontvanger
         id: recipient
         if: always()
@@ -56,8 +53,6 @@ jobs:
             echo "email=" >> "$GITHUB_OUTPUT"
           fi
 
-      # Draait altijd, ook als er geen nieuwe versie is of als de
-      # check-stap zelf faalde — zo weet je zeker dat de run gebeurd is.
       - name: Statusmail versturen
         if: always()
         env:
