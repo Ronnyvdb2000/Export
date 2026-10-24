@@ -23,6 +23,7 @@ SOURCE_URL = (
     "vlif-investeringssteun-voor-land-en-tuinbouwers"
 )
 
+# Vangt "VLIF4 Codelijst blok ..." in alle varianten
 LINK_TEXT_PATTERN = re.compile(r"vlif4\s*codelijst\s*blok", re.IGNORECASE)
 
 # Alleen voor de mail-output; blokkeert niets.
