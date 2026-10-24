@@ -74,7 +74,6 @@ jobs:
 
   build:
     needs: check-and-fetch
-    # Draai alleen als de check een nieuwe PDF heeft gevonden
     if: needs.check-and-fetch.outputs.new_version == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -113,11 +112,10 @@ jobs:
         with:
           name: vlif4-excels
           path: output/*.xlsx
-          if-no-files-found: error # <--- Faalt meteen als er geen Excel is
+          if-no-files-found: error
 
   validate:
     needs: build
-    # Draai ALLEEN als de build job succesvol was (voorkomt 'Artifact not found')
     if: needs.build.result == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -191,7 +189,6 @@ jobs:
 
   notify:
     needs: validate
-    # Draai ALLEEN als validate succesvol was (voorkomt fouten bij het mailen)
     if: needs.validate.result == 'success'
     runs-on: ubuntu-latest
     steps:
