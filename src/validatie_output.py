@@ -67,7 +67,16 @@ def extract_expected_record_count(pdf_path: str) -> int:
     (enkel records met een geldige code, zoals ook gefilterd in _save()).
     """
     records = parse_pdf(pdf_path)
-    return len([r for r in records if r.get("code", "") != ""])
+    
+    # NIEUW: layout_engine.py geeft nu een pandas DataFrame terug
+    if hasattr(records, "columns"):
+        col = "code (%)" if "code (%)" in records.columns else "code"
+        if col in records.columns:
+            return len(records[records[col].astype(str).str.strip() != ""])
+        return len(records)
+        
+    # Fallback voor de oude dict-lijst (voor het geval dat)
+    return len([r for r in records if isinstance(r, dict) and r.get("code", "") != ""])
 
 
 def count_actual_rows(wb) -> int:
@@ -204,43 +213,6 @@ def load_phi_model(model_path: str):
     return Llama(model_path=model_path, n_ctx=4096, n_threads=4, verbose=False)
 
 
-def find_relevant_context_oud(full_text: str, cell_value: str, window: int = 900) -> str:
-    """
-    OUD, NIET MEER GEBRUIKT (bewaard ter documentatie). Fouten van deze versie:
-      - de celwaarde in het rapport eindigt op "..." (80 tekens + "..."), waardoor
-        de zoekopdracht met 120 tekens nooit slaagt;
-      - de PDF-tekst bevat regeleinden midden in zinnen, waardoor ook de zoekopdracht
-        met 60 tekens faalde (getest op blok 03-2026);
-      - bij geen treffer viel hij terug op de eerste 900 tekens van de PDF (titelpagina),
-        zodat Phi telkens de inleiding beoordeelde in plaats van het juiste fragment.
-
-    Zoekt het fragment in de volledige PDF-tekst waar de celwaarde
-    (of het begin ervan) letterlijk voorkomt, en geeft een venster
-    rond die plek terug. Dit vervangt het vroegere gedrag waarbij
-    altijd blindelings de eerste 1500 tekens van de PDF werden gebruikt
-    (= vaak enkel de titelpagina), wat de Phi-check zinloos maakte voor
-    rijen die verderop in het document staan.
-
-    Als de waarde niet letterlijk gevonden wordt (bv. door kleine
-    tekstverschillen bij extractie), valt dit terug op een korter
-    zoekfragment (eerste 60 tekens) — en als dat ook niet lukt, op de
-    eerste `window` tekens van het document als laatste redmiddel.
-    """
-    needle = str(cell_value).strip()
-    if not needle:
-        return full_text[:window]
-
-    idx = full_text.find(needle[:120])
-    if idx == -1:
-        idx = full_text.find(needle[:60])
-    if idx == -1:
-        return full_text[:window]
-
-    start = max(0, idx - window // 2)
-    end = min(len(full_text), idx + window // 2)
-    return full_text[start:end]
-
-
 def find_relevant_context(norm_source: str, cell_value: str, window: int = 900) -> str:
     """
     NIEUW. Zoekt in de genormaliseerde PDF-tekst (witruimte samengevoegd, zie _norm)
@@ -280,13 +252,11 @@ PROMPT_TEMPLATE = (
     "of lijken er meerdere records samengevoegd, of kolommen verschoven?\n\n"
     "Antwoord ALLEEN met geldige JSON, geen andere tekst:\n"
     '{{"issue": true/false, "reason": "uitleg in het Nederlands, maximaal 25 woorden"}}\n'
-    # Oorspronkelijk: "korte uitleg in het Nederlands" (antwoorden werden soms afgekapt)
 )
 
 
 def phi_check_row(llm, source_text: str, row_data: dict) -> dict:
     prompt = PROMPT_TEMPLATE.format(source_text=source_text[:1500], row_data=json.dumps(row_data, ensure_ascii=False))
-    # Oorspronkelijk: max_tokens=200 (enkele antwoorden werden midden in de JSON afgekapt)
     output = llm(prompt, max_tokens=300, temperature=0.0, stop=["\n\n"])
     text = output["choices"][0]["text"].strip()
     try:
@@ -343,7 +313,6 @@ def main():
         if sheet_name == TOC_SHEET_NAME:
             continue
         ws = wb[sheet_name]
-        # Oorspronkelijk: anomalies = find_anomalous_cells(ws)
         anomalies = find_anomalous_cells(ws, source_text=norm_source)
         numeric_cols = [int(x) for x in args.numeric_columns.split(",") if x.strip()]
         type_issues = check_column_type_consistency(ws, numeric_cols) if numeric_cols else []
@@ -361,8 +330,6 @@ def main():
     # Laag 2 (optioneel, alleen als een modelpad is meegegeven)
     if args.model and all_issues:
         llm = load_phi_model(args.model)
-        # Oorspronkelijk werd hier de PDF opnieuw ingelezen (zonder normalisatie) en
-        # find_relevant_context(full_text, val) gebruikt; nu de genormaliseerde tekst van bovenaan.
         for i, (row, col, val, reason) in enumerate(all_issues):
             if row == 0:
                 continue
