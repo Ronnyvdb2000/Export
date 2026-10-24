@@ -9,32 +9,41 @@ def parse_pdf(pdf_path):
     
     for page_num in range(len(doc)):
         page = doc[page_num]
-        # Gebruik de ingebouwde tabel-herkenning van PyMuPDF
         tabs = page.find_tables()
         
         for tab in tabs:
             data = tab.extract()
             if data:
-                # Voeg de tabel toe aan de lijst
                 for row in data:
                     all_data.append(row)
                         
     if not all_data:
-        # Fallback voor pagina's zonder tabellen (bijv. de inleiding)
-        text = ""
-        for page_num in range(len(doc)):
-            text += doc[page_num].get_text() + "\n"
-        return pd.DataFrame({"Text": text.splitlines()})
+        return pd.DataFrame()
         
-    # Bepaal het maximum aantal kolommen dat we tegenkwamen
     max_cols = max(len(row) for row in all_data) if all_data else 0
     
-    # Vul rijen aan tot het maximum aantal kolommen (voorkomt crashes)
     for row in all_data:
         while len(row) < max_cols:
             row.append("")
             
     df = pd.DataFrame(all_data)
+    
+    # Hernoem de kolommen naar wat build_excel.py verwacht
+    rename_dict = {
+        0: "subfilter",
+        1: "code (%)",
+        2: "omschrijving",
+        3: "extra info",
+        4: "kenmerk",
+        5: "eenheid",
+        6: "offerte"
+    }
+    
+    for i in range(max_cols):
+        if i not in rename_dict:
+            rename_dict[i] = f"kolom_{i}"
+            
+    df = df.rename(columns=rename_dict)
     return df
 
 def main():
