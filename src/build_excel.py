@@ -1,10 +1,5 @@
 """
 build_excel.py – Ruwe Excel → gestructureerd werkboek met tabbladen
-
-Tabblad-indeling per blok:
-  Blok 2 (Productief): Rundveestal t/m Machines en Varia
-  Blok 3 (AERi):       AERi RV, AERi V, AERi Pl, AERi OG, AERi Roerend
-  Blok 4 (NPI):        NPI Onroerend, NPI Machines
 """
 
 import re
@@ -13,70 +8,38 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# Titels worden dynamisch gelezen uit de ruwe Excel (_meta tabblad)
 TITLE_LINE1 = "VLIF CODELIJST"
 TITLE_LINE2 = ""
 TITLE_LINE3 = ""
 
-# Vaste mapping van hoofdstuk-sleutel naar korte tabbladnaam en volledige titel
-# Wordt aangevuld met automatisch gedetecteerde tabbladen
+# Mapping van sectienummer naar tabbladnaam en volledige titel
 TAB_MAP = {
-    "2.1 RUNDVEESTAL"                              : ("Rundveestal",       "2.1 Rundveestal"),
-    "2.2 VARKENSSTAL"                              : ("Varkensstal",       "2.2 Varkensstal"),
-    "2.3 PLUIMVEESTAL"                             : ("Pluimveestal",      "2.3 Pluimveestal"),
-    "2.4 PAARDENSTAL"                              : ("Paardenstal",       "2.4 Paardenstal"),
-    "2.5 SCHAPENSTAL"                              : ("Schapenstal",       "2.5 Schapenstal"),
-    "2.6 GEITENSTAL"                               : ("Geitenstal",        "2.6 Geitenstal"),
-    "2.7 HERTENSTAL"                               : ("Hertenstal",        "2.7 Hertenstal"),
-    "2.8 KONIJNENSTAL"                             : ("Konijnenstal",      "2.8 Konijnenstal"),
-    "2.9 SERRE"                                    : ("Serre",             "2.9 Serre"),
-    "2.10 LOODS"                                   : ("Loods",             "2.10 Loods"),
-    "2.11 ONROEREND BUITEN STAL/LOODS/SERRE"       : ("Onroerend buiten",  "2.11 Onroerend buiten"),
-    "2.12 MACHINES EN VARIA"                        : ("Machines en Varia", "2.12 Machines en Varia"),
-    "3.1 RUNDVEESTAL"                              : ("AERi RV",           "3.1 AERi Rundveestal"),
-    "3.2 VARKENSSTAL"                              : ("AERi V",            "3.2 AERi Varkensstal"),
-    "3.3 PLUIMVEESTAL"                             : ("AERi Pl",           "3.3 AERi Pluimveestal"),
-    "3.4 ONROEREND BUITEN NIEUWBOUWSTAL"            : ("AERi OG",           "3.4 AERi Onroerend buiten"),
-    "3.5 ROERENDE AEA-TECHNIEKEN IN BESTAANDE STALLEN": ("AERi Roerend",   "3.5 Roerende AEA-technieken"),
-    "4.1 ONROEREND BUITEN STAL/LOODS/SERRE"        : ("NPI Onroerend",     "4.1 NPI Onroerend buiten"),
-    "4.2 MACHINES EN VARIA"                         : ("NPI Machines",      "4.2 NPI Machines en Varia"),
-    # NIEUW (blok 03-2026): de volgorde van "Machines en Varia" en "Onroerend buiten"
-    # is in de PDF omgedraaid t.o.v. de sleutels hierboven (2.11/2.12 en 4.1/4.2).
-    # De oude sleutels blijven staan voor oudere PDF-versies; deze komen erbij.
-    "2.11 MACHINES EN VARIA"                       : ("Machines en Varia", "2.11 Machines en Varia"),
-    "2.12 ONROEREND BUITEN STAL/LOODS/SERRE"       : ("Onroerend buiten",  "2.12 Onroerend buiten"),
-    "4.1 MACHINES EN VARIA"                        : ("NPI Machines",      "4.1 NPI Machines en Varia"),
-    "4.2 ONROEREND BUITEN STAL/LOODS/SERRE"        : ("NPI Onroerend",     "4.2 NPI Onroerend buiten"),
+    "2.1": ("Rundveestal", "2.1 Rundveestal"),
+    "2.2": ("Varkensstal", "2.2 Varkensstal"),
+    "2.3": ("Pluimveestal", "2.3 Pluimveestal"),
+    "2.4": ("Vleeskalverstal", "2.4 Vleeskalverstal"),
+    "2.5": ("Paardenstal", "2.5 Paardenstal"),
+    "2.6": ("Schapenstal", "2.6 Schapenstal"),
+    "2.7": ("Geitenstal", "2.7 Geitenstal"),
+    "2.8": ("Hertenstal", "2.8 Hertenstal"),
+    "2.9": ("Konijnenstal", "2.9 Konijnenstal"),
+    "2.10": ("Serre", "2.10 Serre"),
+    "2.11": ("Loods", "2.11 Loods"),
+    "2.12": ("Onroerend buiten", "2.12 Onroerend buiten"),
+    "2.13": ("Machines en Varia", "2.13 Machines en Varia"),
+    "3.1": ("AERi RV", "3.1 AERi Rundveestal"),
+    "3.2": ("AERi V", "3.2 AERi Varkensstal"),
+    "3.3": ("AERi Pl", "3.3 AERi Pluimveestal"),
+    "3.4": ("AERi Vleeskalver", "3.4 AERi Vleeskalverstal"),
+    "3.5": ("AERi OG", "3.5 AERi Onroerend buiten"),
+    "3.6": ("AERi Roerend", "3.6 Roerende AEA-technieken"),
+    "4.1": ("NPI Onroerend", "4.1 NPI Onroerend buiten"),
+    "4.2": ("NPI Machines", "4.2 NPI Machines en Varia"),
 }
-
-def _build_tabs(df):
-    """Detecteer tabbladen automatisch uit de data, in volgorde van de PDF."""
-    import re
-    PREFIX_RE = re.compile(r"^(\d+\.\d+)")
-    seen = {}
-    order = []
-    for hoofd in df["hoofdstuk"]:
-        if hoofd and hoofd not in seen:
-            seen[hoofd] = True
-            order.append(hoofd)
-    tabs = []
-    for hoofd in order:
-        if hoofd in TAB_MAP:
-            tab_name, full_title = TAB_MAP[hoofd]
-        else:
-            # Fallback: genereer naam uit hoofdstuk
-            m = PREFIX_RE.match(hoofd)
-            prefix = m.group(1) if m else hoofd[:8]
-            words = hoofd.replace(prefix, "").strip().title()[:18]
-            tab_name  = f"{prefix} {words}".strip()[:31]
-            full_title = hoofd.title()[:60]
-        tabs.append((tab_name, hoofd, full_title))
-    return tabs
 
 HEADERS = ["Subfilter", "Code (%)", "Omschrijving", "Extra info",
            "Kenmerk", "Eenheid", "Offerte"]
 
-# Kleuren
 C_DARK   = "1F4E79"
 C_MID    = "2E75B6"
 C_LIGHT  = "4472C4"
@@ -94,14 +57,38 @@ def _brd():
 
 def _fix(df):
     df = df.copy().fillna("")
-    # OFFERTE in eenheid of kenmerk → verplaats
     for col in ("eenheid", "kenmerk"):
-        mask = df[col].str.upper().str.contains("OFFERTE", na=False)
-        df.loc[mask, "offerte"] = "OFFERTE"
-        df.loc[mask, col] = df.loc[mask, col].str.replace(
-            r"\s*/?\s*OFFERTE\s*/?", "", regex=True, flags=re.IGNORECASE
-        ).str.strip(" /")
+        if col in df.columns:
+            mask = df[col].str.upper().str.contains("OFFERTE", na=False)
+            df.loc[mask, "offerte"] = "OFFERTE"
+            df.loc[mask, col] = df.loc[mask, col].str.replace(
+                r"\s*/?\s*OFFERTE\s*/?", "", regex=True, flags=re.IGNORECASE
+            ).str.strip(" /")
     return df
+
+
+def _build_tabs(df):
+    """Detecteer tabbladen op basis van het sectienummer in de subfilter-kolom."""
+    seen = {}
+    order = []
+    for sf in df["subfilter"]:
+        if not sf:
+            continue
+        m = re.match(r"^(\d+\.\d+)", str(sf))
+        if m:
+            sectie = m.group(1)
+            if sectie not in seen:
+                seen[sectie] = True
+                order.append(sectie)
+    tabs = []
+    for sectie in order:
+        if sectie in TAB_MAP:
+            tab_name, full_title = TAB_MAP[sectie]
+        else:
+            tab_name = f"Sectie {sectie}"
+            full_title = f"Sectie {sectie}"
+        tabs.append((tab_name, sectie, full_title))
+    return tabs
 
 
 def _title_rows(ws, tab_title, ncols):
@@ -141,54 +128,46 @@ def _data_sheet(ws, tab_df, tab_title):
     hdr_font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
     dat_font = Font(name="Arial", size=9)
     brd = _brd()
-    wrap_cols = {3, 4, 5}   # omschrijving, extra_info, kenmerk
+    wrap_cols = {3, 4, 5}
 
-    # Header rij 5
     ws.append(HEADERS)
     for c in range(1, nc + 1):
         cell = ws.cell(5, c)
         cell.font = hdr_font
         cell.fill = hdr_fill
         cell.border = brd
-        cell.alignment = Alignment(horizontal="center", vertical="center",
-                                   wrap_text=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     ws.row_dimensions[5].height = 24
 
-    # Kolombreedtes
     for i, w in enumerate([30, 7, 42, 52, 28, 12, 9], start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    row_idx  = 6
-    alt      = False
-    prev_sf  = None
+    row_idx = 6
+    alt = False
+    prev_sf = None
 
     for _, rec in tab_df.iterrows():
         sf = rec.get("subfilter", "")
-
-        # Subfilter-sectieregel
-        # Subfilter wisselt → alt-kleuren resetten
         if sf != prev_sf and sf:
             prev_sf = sf
             alt = False
 
-        # Data-rij
         fill = PatternFill("solid", fgColor=C_ALT if alt else C_WHITE)
         values = [
             sf,
-            rec.get("code",         ""),
+            rec.get("code", ""),
             rec.get("omschrijving", ""),
-            rec.get("extra_info",   ""),
-            rec.get("kenmerk",      ""),
-            rec.get("eenheid",      ""),
-            rec.get("offerte",      ""),
+            rec.get("extra info", ""),
+            rec.get("kenmerk", ""),
+            rec.get("eenheid", ""),
+            rec.get("offerte", ""),
         ]
         for ci, val in enumerate(values, start=1):
             cell = ws.cell(row_idx, ci, val or "")
-            cell.font      = dat_font
-            cell.fill      = fill
-            cell.border    = brd
-            cell.alignment = Alignment(vertical="top",
-                                       wrap_text=(ci in wrap_cols))
+            cell.font = dat_font
+            cell.fill = fill
+            cell.border = brd
+            cell.alignment = Alignment(vertical="top", wrap_text=(ci in wrap_cols))
         ws.row_dimensions[row_idx].height = 15
         row_idx += 1
         alt = not alt
@@ -216,14 +195,13 @@ def _toc(ws, tabs_present):
     ws.column_dimensions["B"].width = 22
     ws.column_dimensions["C"].width = 48
 
-    lnk_font = Font(name="Arial", size=10, color=C_DARK,
-                    underline="single", bold=True)
-    txt_font  = Font(name="Arial", size=10)
+    lnk_font = Font(name="Arial", size=10, color=C_DARK, underline="single", bold=True)
+    txt_font = Font(name="Arial", size=10)
     brd = _brd()
 
     for i, (tab_name, _, full_title) in enumerate(tabs_present, start=1):
         row = 5 + i
-        bg  = C_TOC_LT if i % 2 == 0 else C_WHITE
+        bg = C_TOC_LT if i % 2 == 0 else C_WHITE
         fill = PatternFill("solid", fgColor=bg)
 
         n = ws.cell(row, 1, i)
@@ -233,14 +211,9 @@ def _toc(ws, tabs_present):
         lnk = ws.cell(row, 2, tab_name)
         lnk.font = lnk_font; lnk.fill = fill; lnk.border = brd
         lnk.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-        # Interne hyperlink: gebruik openpyxl Hyperlink object met location
         from openpyxl.worksheet.hyperlink import Hyperlink as XlHyperlink
         safe_name = tab_name.replace("'", "''")
-        lnk.hyperlink = XlHyperlink(
-            ref=lnk.coordinate,
-            location=f"'{safe_name}'!A1",
-            tooltip=full_title
-        )
+        lnk.hyperlink = XlHyperlink(ref=lnk.coordinate, location=f"'{safe_name}'!A1", tooltip=full_title)
 
         t = ws.cell(row, 3, full_title)
         t.font = txt_font; t.fill = fill; t.border = brd
@@ -255,7 +228,7 @@ def build(input_xlsx, output_xlsx):
     print(f"📖 Inlezen: {input_xlsx}")
     df = pd.read_excel(input_xlsx, dtype=str)
     df = _fix(df)
-    # Lees titels uit metadata tabblad
+
     try:
         meta = pd.read_excel(input_xlsx, sheet_name="_meta", dtype=str)
         titles = meta["titel"].fillna("").tolist()
@@ -272,14 +245,14 @@ def build(input_xlsx, output_xlsx):
 
     tabs = _build_tabs(df)
     tabs_present = []
-    for tab_name, hoofd_key, full_title in tabs:
-        tab_df = df[df["hoofdstuk"] == hoofd_key].copy()
+    for tab_name, sectie, full_title in tabs:
+        tab_df = df[df["subfilter"].astype(str).str.match(rf"^{sectie}(?!\d)", na=False)].copy()
         if tab_df.empty:
-            print(f"   ⚠️  Leeg: {hoofd_key}")
+            print(f"   ⚠️  Leeg: {sectie}")
             continue
         ws = wb.create_sheet(tab_name)
         _data_sheet(ws, tab_df, full_title)
-        tabs_present.append((tab_name, hoofd_key, full_title))
+        tabs_present.append((tab_name, sectie, full_title))
         print(f"   ✅ {tab_name:22s}  {len(tab_df):4d} rijen")
 
     _toc(toc_ws, tabs_present)
@@ -290,7 +263,7 @@ def build(input_xlsx, output_xlsx):
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
-    p.add_argument("--input",  required=True)
+    p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
     a = p.parse_args()
     build(a.input, a.output)
