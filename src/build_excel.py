@@ -12,31 +12,6 @@ TITLE_LINE1 = "VLIF CODELIJST"
 TITLE_LINE2 = ""
 TITLE_LINE3 = ""
 
-# Mapping van sectienummer naar tabbladnaam en volledige titel
-TAB_MAP = {
-    "2.1": ("Rundveestal", "2.1 Rundveestal"),
-    "2.2": ("Varkensstal", "2.2 Varkensstal"),
-    "2.3": ("Pluimveestal", "2.3 Pluimveestal"),
-    "2.4": ("Vleeskalverstal", "2.4 Vleeskalverstal"),
-    "2.5": ("Paardenstal", "2.5 Paardenstal"),
-    "2.6": ("Schapenstal", "2.6 Schapenstal"),
-    "2.7": ("Geitenstal", "2.7 Geitenstal"),
-    "2.8": ("Hertenstal", "2.8 Hertenstal"),
-    "2.9": ("Konijnenstal", "2.9 Konijnenstal"),
-    "2.10": ("Serre", "2.10 Serre"),
-    "2.11": ("Loods", "2.11 Loods"),
-    "2.12": ("Onroerend Buiten", "2.12 Onroerend Buiten Stal/ Loods/ Serre"),
-    "2.13": ("Machines en Varia", "2.13 Machines en Varia"),
-    "3.1": ("AERi RV", "3.1 AERi Rundveestal"),
-    "3.2": ("AERi V", "3.2 AERi Varkensstal"),
-    "3.3": ("AERi Pl", "3.3 AERi Pluimveestal"),
-    "3.4": ("AERi Vleeskalver", "3.4 AERi Vleeskalverstal"),
-    "3.5": ("AERi OG", "3.5 AERi Onroerend Buiten Nieuwbouwstal"),
-    "3.6": ("AERi Roerend", "3.6 Roerende AEA-technieken"),
-    "4.1": ("NPI Onroerend", "4.1 Onroerend Buiten Stal/ Loods/ Serre"),
-    "4.2": ("NPI Machines", "4.2 NPI Machines en Varia"),
-}
-
 HEADERS = ["Subfilter", "Code (%)", "Omschrijving", "Extra info",
            "Kenmerk", "Eenheid", "Offerte"]
 
@@ -67,29 +42,63 @@ def _fix(df):
     return df
 
 
-def _build_tabs(df):
-    """Detecteer tabbladen op basis van het sectienummer (bv. "2.1")."""
-    PREFIX_RE = re.compile(r"^(\d+\.\d+)")
-    seen = {}
-    order = []
+def _clean_tab_name(text):
+    """
+    Maakt een nette tabbladnaam van een hoofdstuktekst.
+    Voorbeeld: "2.4 Vleeskalverstal" -> "Vleeskalverstal"
+    """
+    # Verwijder het sectienummer (cijfers en punten aan het begin)
+    text = re.sub(r'^\d+(\.\d+)*\s*', '', text).strip()
     
+    # Verwijder eventuele resterende leestekens
+    text = re.sub(r'[^\w\s-]', '', text)
+    
+    # Vervang spaties door underscores? Nee, we willen spaties behouden.
+    # Maar Excel-tabbladen mogen geen speciale tekens bevatten zoals : \ / ? * [ ]
+    # Dus we vervangen die door een spatie of streepje.
+    for ch in [':', '\\', '/', '?', '*', '[', ']']:
+        text = text.replace(ch, ' ')
+    
+    # Verwijder dubbele spaties
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Als de naam leeg is, geef een fallback
+    if not text:
+        text = "Sectie"
+    
+    return text[:31]  # Excel-limiet is 31 tekens
+
+
+def _build_tabs(df):
+    """
+    Detecteer tabbladen dynamisch op basis van de 'hoofdstuk'-kolom.
+    Retourneert een lijst van (tab_naam, sectie_nummer, volledige_titel).
+    """
+    # Zoek alle unieke hoofdstukken
+    unieke = []
+    seen = set()
     for hoofd in df["hoofdstuk"]:
-        if hoofd:
-            m = PREFIX_RE.match(str(hoofd))
-            if m:
-                sectie = m.group(1)
-                if sectie not in seen:
-                    seen[sectie] = True
-                    order.append(sectie)
-                    
+        if pd.isna(hoofd) or not str(hoofd).strip():
+            continue
+        hoofd = str(hoofd).strip()
+        if hoofd not in seen:
+            seen.add(hoofd)
+            unieke.append(hoofd)
+    
+    # Maak tabs
     tabs = []
-    for sectie in order:
-        if sectie in TAB_MAP:
-            tab_name, full_title = TAB_MAP[sectie]
+    for hoofd in unieke:
+        # Zoek het sectienummer (bijv. "2.4")
+        m = re.match(r'^(\d+\.\d+)', hoofd)
+        if m:
+            sectie = m.group(1)
         else:
-            tab_name = f"Sectie {sectie}"
-            full_title = f"Sectie {sectie}"
-        tabs.append((tab_name, sectie, full_title))
+            # Geen sectienummer gevonden, gebruik het hele hoofdstuk als sectie
+            sectie = hoofd
+        
+        tab_naam = _clean_tab_name(hoofd)
+        tabs.append((tab_naam, sectie, hoofd))
+    
     return tabs
 
 
@@ -256,11 +265,17 @@ def build(input_xlsx, output_xlsx):
     tabs = _build_tabs(df)
     tabs_present = []
     for tab_name, sectie, full_title in tabs:
-        # Filter: match op "X.Y." of "X.Y " (dus 2.4 matcht met 2.4.1 en met 2.4 Vleeskalverstal)
-        tab_df = df[df["hoofdstuk"].str.match(rf"^{sectie}(\s|\.)", na=False)].copy()
+        # Filter: rijen waarvan de 'hoofdstuk' overeenkomt met deze sectie
+        tab_df = df[df["hoofdstuk"] == full_title].copy()
+        
+        # Als dat leeg is (kan gebeuren door spaties), probeer met regex
         if tab_df.empty:
-            print(f"   ⚠️  Leeg: {sectie}")
+            tab_df = df[df["hoofdstuk"].astype(str).str.startswith(sectie)].copy()
+        
+        if tab_df.empty:
+            print(f"   ⚠️  Leeg: {full_title}")
             continue
+        
         ws = wb.create_sheet(tab_name)
         _data_sheet(ws, tab_df, full_title)
         tabs_present.append((tab_name, sectie, full_title))
