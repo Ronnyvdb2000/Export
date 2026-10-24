@@ -114,20 +114,36 @@ def main() -> int:
 
     print(f"NIEUW BESTAND: '{last_name}' -> '{new_name}'")
 
+    # Download eerst in geheugen, valideer, en pas dan de oude PDF's verwijderen.
+    print("Downloaden...")
+    r = requests.get(href, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
+    r.raise_for_status()
+
+    content = r.content
+    print(f"  Content-Type : {r.headers.get('Content-Type')}")
+    print(f"  Grootte      : {len(content)} bytes")
+    print(f"  Eerste bytes : {content[:8]!r}")
+
+    # Validatie: het moet echt een PDF zijn, anders stoppen we voordat we
+    # de repo vervuilen met een HTML-foutpagina of leeg bestand.
+    if not content.startswith(b"%PDF"):
+        print("FOUT: gedownloade inhoud begint niet met %PDF.", file=sys.stderr)
+        print(f"Eerste 200 bytes: {content[:200]!r}", file=sys.stderr)
+        write_github_output("new_version", "false")
+        return 1
+
+    if len(content) < 10_000:
+        print(f"FOUT: PDF lijkt te klein ({len(content)} bytes).", file=sys.stderr)
+        write_github_output("new_version", "false")
+        return 1
+
+    # Nu pas de oude PDF('s) verwijderen.
     for old in INPUT_DIR.glob("*.pdf"):
         print(f"  Verwijderen: {old.name}")
         old.unlink()
 
-    print("Downloaden...")
-    r = requests.get(href, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
-    r.raise_for_status()
-    if not r.content.startswith(b"%PDF"):
-        print("FOUT: gedownloade inhoud is geen PDF.", file=sys.stderr)
-        write_github_output("new_version", "false")
-        return 1
-
     pdf_path = INPUT_DIR / new_name
-    pdf_path.write_bytes(r.content)
+    pdf_path.write_bytes(content)
     print(f"Opgeslagen   : {pdf_path}")
 
     LAST_NAME_FILE.write_text(new_name, encoding="utf-8")
