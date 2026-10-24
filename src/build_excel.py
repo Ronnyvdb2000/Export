@@ -24,6 +24,30 @@ C_WHITE  = "FFFFFF"
 C_TOC    = "2E75B6"
 C_TOC_LT = "DEEAF1"
 
+TAB_NAMES = {
+    "2.1": "Rundveestal",
+    "2.2": "Varkensstal",
+    "2.3": "Pluimveestal",
+    "2.4": "Vleeskalverstal",
+    "2.5": "Paardenstal",
+    "2.6": "Schapenstal",
+    "2.7": "Geitenstal",
+    "2.8": "Hertenstal",
+    "2.9": "Konijnenstal",
+    "2.10": "Serre",
+    "2.11": "Loods",
+    "2.12": "Onroerend Buiten",
+    "2.13": "Machines en Varia",
+    "3.1": "AERi RV",
+    "3.2": "AERi V",
+    "3.3": "AERi Pl",
+    "3.4": "AERi Vleeskalver",
+    "3.5": "AERi OG",
+    "3.6": "AERi Roerend",
+    "4.1": "NPI Onroerend",
+    "4.2": "NPI Machines",
+}
+
 
 def _brd():
     t = Side(style="thin", color="B8CCE4")
@@ -42,62 +66,36 @@ def _fix(df):
     return df
 
 
-def _clean_tab_name(text):
-    """
-    Maakt een nette tabbladnaam van een hoofdstuktekst.
-    Voorbeeld: "2.4 Vleeskalverstal" -> "Vleeskalverstal"
-    """
-    # Verwijder het sectienummer (cijfers en punten aan het begin)
-    text = re.sub(r'^\d+(\.\d+)*\s*', '', text).strip()
-    
-    # Verwijder eventuele resterende leestekens
-    text = re.sub(r'[^\w\s-]', '', text)
-    
-    # Vervang spaties door underscores? Nee, we willen spaties behouden.
-    # Maar Excel-tabbladen mogen geen speciale tekens bevatten zoals : \ / ? * [ ]
-    # Dus we vervangen die door een spatie of streepje.
-    for ch in [':', '\\', '/', '?', '*', '[', ']']:
-        text = text.replace(ch, ' ')
-    
-    # Verwijder dubbele spaties
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    # Als de naam leeg is, geef een fallback
-    if not text:
-        text = "Sectie"
-    
-    return text[:31]  # Excel-limiet is 31 tekens
+def _extract_section(subfilter):
+    """Haal het sectienummer (bv. '2.1') uit een subfilter-string (bv. '2.1.1 Bewaren en koelen')."""
+    if not subfilter:
+        return None
+    m = re.match(r'^(\d+\.\d+)', str(subfilter).strip())
+    if m:
+        return m.group(1)
+    return None
 
 
 def _build_tabs(df):
-    """
-    Detecteer tabbladen dynamisch op basis van de 'hoofdstuk'-kolom.
-    Retourneert een lijst van (tab_naam, sectie_nummer, volledige_titel).
-    """
-    # Zoek alle unieke hoofdstukken
-    unieke = []
+    """Detecteer tabbladen dynamisch op basis van het sectienummer in 'subfilter'."""
+    secties = []
     seen = set()
-    for hoofd in df["hoofdstuk"]:
-        if pd.isna(hoofd) or not str(hoofd).strip():
-            continue
-        hoofd = str(hoofd).strip()
-        if hoofd not in seen:
-            seen.add(hoofd)
-            unieke.append(hoofd)
     
-    # Maak tabs
+    for sf in df["subfilter"]:
+        sectie = _extract_section(sf)
+        if sectie and sectie not in seen:
+            seen.add(sectie)
+            secties.append(sectie)
+    
     tabs = []
-    for hoofd in unieke:
-        # Zoek het sectienummer (bijv. "2.4")
-        m = re.match(r'^(\d+\.\d+)', hoofd)
-        if m:
-            sectie = m.group(1)
+    for sectie in secties:
+        if sectie in TAB_NAMES:
+            tab_naam = TAB_NAMES[sectie]
         else:
-            # Geen sectienummer gevonden, gebruik het hele hoofdstuk als sectie
-            sectie = hoofd
+            tab_naam = f"Sectie {sectie}"
         
-        tab_naam = _clean_tab_name(hoofd)
-        tabs.append((tab_naam, sectie, hoofd))
+        full_title = f"{sectie} {tab_naam}"
+        tabs.append((tab_naam, sectie, full_title))
     
     return tabs
 
@@ -246,6 +244,7 @@ def build(input_xlsx, output_xlsx):
     global TITLE_LINE1, TITLE_LINE2, TITLE_LINE3
     print(f"📖 Inlezen: {input_xlsx}")
     df = pd.read_excel(input_xlsx, dtype=str)
+    df = df.fillna("")
     df = _fix(df)
     
     try:
@@ -263,17 +262,14 @@ def build(input_xlsx, output_xlsx):
     toc_ws = wb.create_sheet("Inhoudsopgave", 0)
 
     tabs = _build_tabs(df)
+    print(f"   Gevonden secties: {[t[1] for t in tabs]}")
+    
     tabs_present = []
     for tab_name, sectie, full_title in tabs:
-        # Filter: rijen waarvan de 'hoofdstuk' overeenkomt met deze sectie
-        tab_df = df[df["hoofdstuk"] == full_title].copy()
-        
-        # Als dat leeg is (kan gebeuren door spaties), probeer met regex
-        if tab_df.empty:
-            tab_df = df[df["hoofdstuk"].astype(str).str.startswith(sectie)].copy()
+        tab_df = df[df["subfilter"].astype(str).str.startswith(sectie + ".")].copy()
         
         if tab_df.empty:
-            print(f"   ⚠️  Leeg: {full_title}")
+            print(f"   ⚠️  Leeg: {sectie}")
             continue
         
         ws = wb.create_sheet(tab_name)
