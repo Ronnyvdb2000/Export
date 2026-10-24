@@ -1,6 +1,7 @@
 import pymupdf
 import pandas as pd
 import argparse
+import re
 from pathlib import Path
 
 def parse_pdf(pdf_path):
@@ -44,6 +45,27 @@ def parse_pdf(pdf_path):
             rename_dict[i] = f"kolom_{i}"
             
     df = df.rename(columns=rename_dict)
+    
+    # Voeg de 'hoofdstuk' kolom toe
+    hoofdstuk = None
+    hoofdstukken = []
+    
+    for index, row in df.iterrows():
+        sub = str(row.get("subfilter", "")).strip()
+        oms = str(row.get("omschrijving", "")).strip()
+        
+        # Zoek een sectie zoals "2.1" of "3.2"
+        match = re.match(r'^(\d+\.\d+)', sub) or re.match(r'^(\d+\.\d+)', oms)
+        if match:
+            # Pak de volledige tekst als die in subfilter staat, anders de omschrijving
+            if sub:
+                hoofdstuk = sub
+            else:
+                hoofdstuk = oms
+        
+        hoofdstukken.append(hoofdstuk)
+    
+    df["hoofdstuk"] = hoofdstukken
     return df
 
 def main():
