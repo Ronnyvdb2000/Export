@@ -2,11 +2,12 @@ name: VLIF4 Alles-in-één (check, build, validate, mail)
 
 on:
   schedule:
-    - cron: "0 17 * * 1,3,5"  # elke ma/wo/vr om 17:00 UTC
-  workflow_dispatch: {}       # handmatig triggeren
+    - cron: "0 17 * * 1,3,5"
+  workflow_dispatch: {}
   push:
     paths:
-      - 'input/**/*.pdf'      # als er handmatig een PDF wordt toegevoegd
+      - 'input/**/*.pdf'
+      - 'data/**'
 
 env:
   PHI_MODEL_URL: "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
