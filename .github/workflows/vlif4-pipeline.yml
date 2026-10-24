@@ -1,9 +1,10 @@
 name: VLIF4 Pipeline (build + validate + mail)
 
 on:
-  push:
-    paths:
-      - 'input/**/*.pdf'
+  workflow_run:
+    workflows: ["VLIF4 wekelijkse check (detectie + download)"]
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       notify_email:
@@ -19,30 +20,68 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Start alleen als de vorige workflow slaagde, of bij handmatige start
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      has_new_pdf: ${{ steps.check_new.outputs.run }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Controleer of er een nieuwe PDF is
+        id: check_new
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git log -1 --pretty=%B | grep -q "Nieuwe VLIF4-codelijst"; then
+            echo "Nieuwe PDF gevonden."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Geen nieuwe PDF. Build wordt overgeslagen."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Python
+        if: steps.check_new.outputs.run == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Installeer dependencies
+        if: steps.check_new.outputs.run == 'true'
         run: pip install pymupdf openpyxl pandas
 
       - name: Verwerk alle PDF's in input/
+        if: steps.check_new.outputs.run == 'true'
         run: |
           mkdir -p output raw
           shopt -s nullglob
+          FOUND_PDF=0
           for pdf in "$PDF_DIR"/*.pdf; do
+            FOUND_PDF=1
             name=$(basename "$pdf" .pdf)
             echo "=== Verwerken: $pdf ==="
-            python src/layout_engine.py --input-pdf "$pdf" --output-xlsx "raw/${name}.xlsx"
-            python src/build_excel.py --input "raw/${name}.xlsx" --output "output/${name}.xlsx"
+            
+            # Fail-safe: vang corrupte PDFs af zodat de run niet klapt
+            if python src/layout_engine.py --input-pdf "$pdf" --output-xlsx "raw/${name}.xlsx"; then
+              python src/build_excel.py --input "raw/${name}.xlsx" --output "output/${name}.xlsx"
+            else
+              echo "WAARSCHUWING: Kon $pdf niet verwerken (mogelijk corrupt). Ga door."
+            fi
           done
+          
+          if [ "$FOUND_PDF" -eq 0 ]; then
+            echo "FOUT: Geen PDF-bestanden gevonden in $PDF_DIR"
+            exit 1
+          fi
           ls -la output/
 
       - name: Upload Excel-bestanden als artifact
+        if: steps.check_new.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: vlif4-excels
@@ -50,9 +89,13 @@ jobs:
 
   validate:
     needs: build
+    # Draai alleen als build écht iets heeft gedaan
+    if: needs.build.outputs.has_new_pdf == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Download Excel-artifacts
         uses: actions/download-artifact@v4
@@ -128,6 +171,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Download Excel-artifacts
         uses: actions/download-artifact@v4
@@ -154,14 +199,12 @@ jobs:
       - name: Installeer dependencies
         run: pip install resend
 
-      # Bepaalt het ontvanger-adres, met deze prioriteit:
-      #   1. handmatig ingevuld notify_email bij "Run workflow"
-      #   2. inhoud van data/notify_email.txt (indien aanwezig en niet leeg)
-      #   3. de NOTIFY_EMAIL secret (standaard fallback)
       - name: Bepaal ontvanger
         id: recipient
         run: |
-          if [ -f data/notify_email.txt ] && [ -s data/notify_email.txt ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.notify_email }}" ]; then
+            echo "email=${{ inputs.notify_email }}" >> "$GITHUB_OUTPUT"
+          elif [ -f data/notify_email.txt ] && [ -s data/notify_email.txt ]; then
             echo "email=$(cat data/notify_email.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
           else
             echo "email=" >> "$GITHUB_OUTPUT"
@@ -171,7 +214,7 @@ jobs:
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           RESEND_FROM: ${{ secrets.RESEND_FROM }}
-          NOTIFY_EMAIL: ${{ inputs.notify_email || steps.recipient.outputs.email || secrets.NOTIFY_EMAIL }}
+          NOTIFY_EMAIL: ${{ steps.recipient.outputs.email || secrets.NOTIFY_EMAIL }}
         run: |
           ISSUES=$(cat issues_found.txt)
           python send_email.py --attachments-dir attachments --issues-found "$ISSUES"
