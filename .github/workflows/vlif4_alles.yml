@@ -2,12 +2,12 @@ name: VLIF4 Alles-in-één (check, build, validate, mail)
 
 on:
   schedule:
-    - cron: "0 17 * * 1,3,5"
-  workflow_dispatch: {}
+    - cron: "0 17 * * 1,3,5"  # elke ma/wo/vr om 17:00 UTC
+  workflow_dispatch: {}       # handmatig triggeren
   push:
     paths:
       - 'input/**/*.pdf'
-      - 'data/**'
+      - 'data/**'             # triggert ook als je de state-bestanden aanpast
 
 env:
   PHI_MODEL_URL: "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"
@@ -91,7 +91,9 @@ jobs:
         run: |
           mkdir -p output raw
           shopt -s nullglob
+          FOUND_PDF=0
           for pdf in "$PDF_DIR"/*.pdf; do
+            FOUND_PDF=1
             name=$(basename "$pdf" .pdf)
             echo "=== Verwerken: $pdf ==="
             if python src/layout_engine.py --input-pdf "$pdf" --output-xlsx "raw/${name}.xlsx"; then
@@ -100,6 +102,10 @@ jobs:
               echo "WAARSCHUWING: Kon $pdf niet verwerken. Ga door."
             fi
           done
+          if [ "$FOUND_PDF" -eq 0 ]; then
+            echo "FOUT: Geen PDF-bestanden gevonden in $PDF_DIR"
+            exit 1
+          fi
           ls -la output/
 
       - name: Upload Excel-bestanden als artifact
@@ -107,20 +113,27 @@ jobs:
         with:
           name: vlif4-excels
           path: output/*.xlsx
+          if-no-files-found: error # <--- Faalt meteen als er geen Excel is
 
   validate:
     needs: build
+    # Draai ALLEEN als de build job succesvol was (voorkomt 'Artifact not found')
+    if: needs.build.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Download Excel-artifacts
         uses: actions/download-artifact@v4
         with:
           name: vlif4-excels
           path: output
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Installeer dependencies
         run: pip install pymupdf openpyxl llama-cpp-python pandas
 
@@ -138,7 +151,7 @@ jobs:
           size=$(stat -c%s "${{ env.PHI_MODEL_FILE }}")
           echo "Gedownload bestand: $size bytes"
           if [ "$size" -lt 1000000000 ]; then
-            echo "FOUT: bestand is te klein"
+            echo "FOUT: bestand is te klein ($size bytes)"
             exit 1
           fi
 
@@ -165,6 +178,7 @@ jobs:
         with:
           name: validation-reports
           path: reports/*.xlsx
+          if-no-files-found: error
 
       - name: Sla issues_found status op
         run: echo "${{ env.issues_found }}" > issues_found.txt
@@ -177,26 +191,34 @@ jobs:
 
   notify:
     needs: validate
+    # Draai ALLEEN als validate succesvol was (voorkomt fouten bij het mailen)
+    if: needs.validate.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Download Excel-artifacts
         uses: actions/download-artifact@v4
         with:
           name: vlif4-excels
           path: attachments
+
       - name: Download validatierapporten
         uses: actions/download-artifact@v4
         with:
           name: validation-reports
           path: attachments
+
       - name: Download issues_found status
         uses: actions/download-artifact@v4
         with:
           name: issues-found-flag
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Installeer dependencies
         run: pip install resend
 
